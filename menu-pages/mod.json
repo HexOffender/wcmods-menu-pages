@@ -1,0 +1,12 @@
+{
+  "name": "Menu pages",
+  "description": "Pages for the in-game mod menu (Insert): your cat's stats, the world and its time, travel, items, quests, fights and cheats. Needs UE4SS, and mods that run code allowed.",
+  "version": "1.0",
+  "author": "wcmods",
+  "uses": [
+    "mod-menu"
+  ],
+  "settings_page": false,
+  "enabled": true,
+  "priority": 0
+}
