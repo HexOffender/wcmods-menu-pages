@@ -65,7 +65,10 @@ drives these pages in the running game.
 
 ## Releasing
 
-1. Raise `"version"` in `menu-pages/mod.json`.
+1. Raise `"version"` in `menu-pages/mod.json`. After a game update, try the pages on the new build
+   (wcmods' `agent test tests/game/test_menu.py`) and add its number to `"game_builds"`
+   (`python wcmods.py game build` shows it); until then wcmods leaves the mod out on that build, unless
+   the player chooses "Use it anyway".
 2. `python tools/pack.py` makes `dist/menu-pages-<version>.zip`.
 3. Make a GitHub release tagged `v<version>` with that .zip attached. Get set up takes the latest
    release's `menu-pages-*.zip`.

@@ -6,6 +6,10 @@
   "uses": [
     "mod-menu"
   ],
+  "game_builds": [
+    24847281,
+    26184573
+  ],
   "settings_page": false,
   "enabled": true,
   "priority": 0
