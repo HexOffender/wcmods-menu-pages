@@ -215,17 +215,26 @@ return function(P)
     -- has that size keeps its base, so coming back to it (after the controller had another pawn, in a fight)
     -- doesn't take the size this set for the cat's own and grow it again.
     local bases, basesFor = {}, nil   -- basesFor: the controller they're for
+    -- The bases for this controller. A new controller is a new level: its cats are new, and the old ones'
+    -- addresses may be reused. Only then are they forgotten (forgetting a cat's base while it still has the
+    -- size this set would grow it again), and the page and the timer both come through here, so neither
+    -- forgets what the other just wrote down.
+    local function basesOf(c)
+        local a = c:GetAddress()
+        if a ~= basesFor then bases, basesFor = {}, a end
+        return bases
+    end
 
     local function setSize(c, f)
         local pawn = pawnOf(c)
         if not pawn then return end
         local okC, cap = pcall(function() return pawn.CapsuleComponent end)
         if not (okC and valid(cap)) then return end   -- not a cat: something else the controller has
-        local addr, now = pawn:GetAddress(), pawn:GetActorScale3D()
-        local rec = bases[addr]
+        local addr, now, known = pawn:GetAddress(), pawn:GetActorScale3D(), basesOf(c)
+        local rec = known[addr]
         if not (rec and math.abs(now.X - rec.base.X * rec.f) <= 0.01 * rec.base.X * rec.f) then
             rec = { base = { X = now.X, Y = now.Y, Z = now.Z }, f = 1 }
-            bases[addr] = rec
+            known[addr] = rec
         end
         local before = cap:GetScaledCapsuleHalfHeight()
         local b = rec.base
@@ -236,7 +245,7 @@ return function(P)
             pawn:K2_SetActorLocation({ X = l.X, Y = l.Y, Z = l.Z + (after - before) + 1 }, false, {}, true)
         end
         cheats.size, rec.f = f, f
-        if f == 1 then bases[addr] = nil end
+        if f == 1 then known[addr] = nil end
     end
     -- Whether Cat size holds the cat's size (the Stats page's Size slider steps aside then).
     function P.sizeHeld() return cheats.on and cheats.size ~= 1 end
@@ -270,12 +279,9 @@ return function(P)
             if not makeCheatManager(c) then return end   -- (tried again next second)
             cheats.god = false
         end
-        -- A new controller is a new level: its cats are new, and the old ones' addresses may be reused. (Only
-        -- then: forgetting a cat's base while it still has the size this set would grow it again.)
-        if c:GetAddress() ~= basesFor then bases, basesFor = {}, c:GetAddress() end
         if cheats.speed ~= 1 and not cheats.speedSet then setSpeed(c, cheats.speed) end
         if cheats.size ~= 1 then
-            local rec, now = bases[pawn:GetAddress()], pawn:GetActorScale3D()
+            local rec, now = basesOf(c)[pawn:GetAddress()], pawn:GetActorScale3D()
             local want = rec and rec.base.X * cheats.size
             if not want or math.abs(now.X - want) > 0.01 * want then setSize(c, cheats.size) end
         end
@@ -342,6 +348,8 @@ return function(P)
                 cheats.flySpeed = ui.slider("Flying speed", cheats.flySpeed, 200, 4000, { step = 100, format = "%.0f cm/s" })
             end
             local size = ui.slider("Cat size", cheats.size, 0.25, 4, { step = 0.05, format = "x%.2f" })
+            -- To the slider's steps: a mouse drag doesn't keep to them, and x1.00 has to be 1 to let go of the size.
+            size = math.floor(size * 20 + 0.5) / 20
             if math.abs(size - cheats.size) > 0.001 then setSize(c, size) end
             if ui.button("Teleport to where the camera looks") then cm:Teleport() end
         else

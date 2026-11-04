@@ -39,7 +39,8 @@ return function(P)
             local holding = ui.switch("Hold this time", hold.time)
             if holding and not hold.time then hold.timeAt = s.secs end
             hold.time = holding
-            ui.note("A game day passes in about 20 minutes (DayNight.ClockSpeed 72).")
+            ui.note("A game day passes in about 20 minutes (DayNight.ClockSpeed 72). Going back to the main menu lets go " ..
+                    "of a held time or pile.")
         end, { id = "world-time", open = true })
         ui.section("Fresh-kill pile", function()
             if not s.fk then
@@ -197,6 +198,7 @@ return function(P)
         local hit = ui.buttons({ "Back", "Save this spot" })
         if hit == 1 and travel.back then jump(travel.back, "where you were", true) end
         if hit == 2 then
+            places.list = nil   -- from the file as it is now, so a hand edit made while the game runs isn't written over
             local list = copy(loadPlaces())
             local name = places.name ~= "" and places.name or string.format("Spot %d", #list + 1)
             list[#list + 1] = { name = name, level = Game.levelName(), X = here.X, Y = here.Y, Z = here.Z }
@@ -215,17 +217,31 @@ return function(P)
                 ui.text("places.json couldn't be read (" .. places.bad .. "). It's left as it is: fix or move it, then " ..
                         "Read it again.", { color = P.THEME.danger })
             end
-            for i, p in ipairs(list) do
+            for _, p in ipairs(list) do
                 -- (a spot without a place, from a hand edit, is kept in the file but has no button)
                 if type(p) == "table" and p.level == level and tonumber(p.X) and tonumber(p.Y) and tonumber(p.Z) then
                     shown = shown + 1
                     local h = ui.buttons({ "Go: " .. tostring(p.name), "Forget" }, { kinds = { "primary", "danger" } })
                     if h == 1 then jump({ X = tonumber(p.X), Y = tonumber(p.Y), Z = tonumber(p.Z) }, tostring(p.name), true)
                     elseif h == 2 then
-                        local rest = copy(list)
-                        table.remove(rest, i)
-                        local ok, err = savePlaces(rest)
-                        travel.note = ok and ("Forgot " .. tostring(p.name)) or ("Couldn't forget it: " .. tostring(err))
+                        -- From the file as it is now (as Save), and this spot by what it is, not where it was in the list.
+                        places.list = nil
+                        local rest, at = copy(loadPlaces()), nil
+                        for j, q in ipairs(rest) do
+                            if type(q) == "table" and q.name == p.name and q.level == p.level and q.X == p.X and q.Y == p.Y
+                                and q.Z == p.Z then
+                                at = j
+                                break
+                            end
+                        end
+                        if at or places.bad then
+                            if at then table.remove(rest, at) end
+                            local ok, err = savePlaces(rest)
+                            travel.note = ok and ("Forgot " .. tostring(p.name)) or ("Couldn't forget it: " .. tostring(err))
+                        else
+                            travel.note = tostring(p.name) .. " isn't in places.json any more (it was edited since); the " ..
+                                          "list below is the file as it is now."
+                        end
                         break
                     end
                 end
@@ -355,9 +371,10 @@ return function(P)
     local drop = { item = ITEMS[1], count = 1, note = nil }
     local CATEGORY = { Consumable = "Herbs and pouches", Materials = "Materials", Cosmetic = "Accessories", Decoration = "Den decorations" }
     -- What you carry: Game.items.list reads and decodes the whole save file, so it's read every ten seconds
-    -- (for the game's saves), and at once when you pick something up.
+    -- (for the game's saves), and at once when you pick something up or there's another cat (another save).
     local inventory = { at = -1, items = {} }
     Game.on("itemPickedUp", function() inventory.at = -1 end)
+    Game.on("player", function() inventory.at = -1 end)
     Menu.page("Items", function(ui)
         ui.heading("Items")
         if not Game.cat() then

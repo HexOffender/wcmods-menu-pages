@@ -9,12 +9,13 @@ with) comes with wcmods. This mod adds the pages about the game, the same way an
 |---|---|
 | Home | **At a glance**: your cat's health, stamina and experience, where it is, the time, the fresh-kill pile, the quest you follow, and Heal, Full stamina, Morning and Evening |
 | Your cat | **Stats**: health, stamina and its regeneration, size, level and experience, the six stats |
-| World | **World** (the clock, which can be held, and the fresh-kill pile), **Travel** (saved spots, checkpoints, every area, and Back), **Nearby** (what's around your cat, marked on screen if you like), **Items** (what you carry, and an item to drop by your cat) |
+| World | **World** (the clock, which can be held, and the fresh-kill pile, which can be kept up; going back to the main menu lets go of both), **Travel** (saved spots, checkpoints, every area, and Back), **Nearby** (what's around your cat, marked on screen if you like), **Items** (what you carry, and an item to drop by your cat) |
 | Story | **Quests**: the one you follow and its objectives, with "Go to objective", and every quest by state, mods' own too |
 | Fight | **Fight**: both sides during a fight, with Heal, Weaken, Cure status and "Double what it drops" |
-| Cheats | **Cheats** (the engine's cheat manager: god mode, fly, ghost, cat size, game speed, teleport, engine commands), **Game switches** (the developers' own) |
+| Cheats | **Cheats** (the engine's cheat manager: god mode, fly, ghost, cat size, game speed, teleport, engine commands), **Game switches** (the developers' own, with the game's own god mode as its four flags) |
 
-It also keeps the line under the menu's title saying how your cat is doing.
+It also keeps the line under the menu's title saying how your cat is doing, with "(held)" on a held time and
+"(kept at N+)" on a pile kept up. While another script's line is up there, it leaves that one alone.
 
 ## Getting it
 
@@ -39,7 +40,11 @@ It needs a wcmods with the menu built in (from the version that moved these page
   "Start with cheats on" switch changes it, as does `python wcmods.py cheats on|off`.
 
 Saved travel spots are kept in `%LOCALAPPDATA%\Wrc\Saved\WCMods\places.json`, beside the game's saves,
-so they stay when the mod is updated.
+so they stay when the mod is updated. It's a JSON list of `{ "name", "level", "X", "Y", "Z" }`, and you can
+edit it by hand: Save this spot and Forget read it again first, and "Read it again" shows your edits. A
+file that isn't one JSON list (or can't be opened) is left as it is, and saving waits until it's fixed. A
+save writes `places.json.new` and checks it before it takes the old file's place; a `places.json.old`
+with no `places.json` is from a save that stopped part way, and saving waits until you rename it back.
 
 ## How it's made
 
@@ -54,10 +59,12 @@ menu-pages/
 ```
 
 It uses only what any mod can: `WCModsMenu` (`Menu.page`, `Menu.status`), `WCModsGame`, `WCModsWorld`,
-`WCModsDraw` and `WCModsNames` (the game's names for items, areas and quests), all documented in wcmods'
+`WCModsDraw` and `WCModsNames` (the game's names for items, areas and quests), documented in wcmods'
 [docs/SDK.md](https://github.com/HexOffender/warrior-cats-mods/blob/main/docs/SDK.md#wcmodsmenu) and
 [docs/scripting.md](https://github.com/HexOffender/warrior-cats-mods/blob/main/docs/scripting.md). So it's also an
-example of a bigger script mod.
+example of a bigger script mod. Two things it reads aren't documented there yet: `Menu.shared("status")`, the
+line the menu shows now (so the status line can leave another script's line alone), and a fight's `director`
+(`Fight:current()` gives your own cat when it's nobody's turn).
 
 To try a change: copy `menu-pages/` into your mods folder (or `python wcmods.py add path\to\menu-pages`),
 then install. wcmods' agent test for the menu (`python wcmods.py agent test tests/game/test_menu.py`)

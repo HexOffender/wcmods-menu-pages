@@ -32,7 +32,9 @@ end
 -- steps aside while another script's line is up, and comes back once that's cleared; it would otherwise
 -- write over it within a second, as its own line changes with the clock.
 if Menu.status then
-    local shown = nil
+    -- A line already up when this starts is taken for this mod's own: after a UE4SS hot reload it is (shared
+    -- variables outlive the reload), and other scripts set theirs later, from timers.
+    local shown = Menu.shared and Menu.shared("status") or nil
     Game.every(0.5, function()
         local up = Menu.shared and Menu.shared("status")   -- the line the menu has now (nil: can't tell)
         if up ~= nil and up ~= "" and up ~= shown then return end

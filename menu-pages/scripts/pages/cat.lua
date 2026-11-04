@@ -39,10 +39,15 @@ return function(P)
     -- Traits come from the last save, which takes reading and decoding the whole save file: every ten
     -- seconds is plenty.
     local traits = { at = -1, text = "" }
+    Game.on("player", function() traits.at = -1 end)   -- another cat (another save)
     -- A number box's options with its range stretched to take the value it shows: a box clamps a value
     -- outside its range, and that would look like you changing it (and write the clamped value to the game).
+    -- It stretches past the value to the next power of two, so there's room to raise it too, and the range
+    -- doesn't move with each value written (a box whose range changes goes back to the game's value).
     local function around(v, lo, hi, opts)
-        opts.min, opts.max = math.min(lo, v), math.max(hi, v)
+        if v > hi then hi = 2 ^ (math.floor(math.log(v, 2)) + 1) end
+        if v < lo then lo = v < 0 and -2 ^ (math.floor(math.log(-v, 2)) + 1) or 0 end
+        opts.min, opts.max = lo, hi
         return opts
     end
 
