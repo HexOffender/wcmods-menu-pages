@@ -3,14 +3,18 @@ return function(P)
     local Menu, now, refresh, changed, valid = P.Menu, P.now, P.refresh, P.changed, P.valid
 
     -- Held values: the World page can hold the time of day and keep the fresh-kill pile up, even with the
-    -- menu closed.
-    local hold = { time = false, timeAt = 12 * 3600, pile = false, pileAt = 100 }
+    -- menu closed (P.hold, which the status line shows). Going back to the main menu lets go of them, so a
+    -- save loaded next doesn't start held.
+    local hold = P.hold
     Game.every(1, function()
         if hold.time then Game.time.setSeconds(hold.timeAt) end
         if hold.pile then
             local v = Game.freshKill.value()
             if v and v < hold.pileAt then Game.freshKill.set(hold.pileAt) end
         end
+    end)
+    Game.on("level", function(level)
+        if tostring(level or ""):find("MainMenu", 1, true) then hold.time, hold.pile = false, false end
     end)
 
     Menu.page("World", function(ui)
@@ -21,7 +25,7 @@ return function(P)
             return
         end
         ui.columns({ { "Territory", s.territory or "?" }, { "Area", s.area or "(shows once you cross into one)" },
-                     { "Time", string.format("%02d:%02d", s.h or 0, s.m or 0) }, { "Level", Game.levelName() or "?" } })
+                     { "Time", P.timeText(s) or "?" }, { "Level", Game.levelName() or "?" } })
         ui.section("Time of day", function()
             local hours = ui.slider("Clock", s.secs / 3600, 0, 23.99, { step = 0.25, format = "%.2f h" })
             if math.abs(hours - s.secs / 3600) > 0.2 then
@@ -31,15 +35,12 @@ return function(P)
             end
             local hit = ui.buttons({ "Dawn 6:00", "Noon", "Dusk 19:00", "Night 23:00" })
             local at = ({ 6, 12, 19, 23 })[hit or 0]
-            if at then
-                Game.time.set(at, 0)
-                hold.timeAt = at * 3600
-                refresh()
-            end
+            if at then P.setTime(at, 0) end
             local holding = ui.switch("Hold this time", hold.time)
             if holding and not hold.time then hold.timeAt = s.secs end
             hold.time = holding
-            ui.note("A game day passes in about 20 minutes (DayNight.ClockSpeed 72).")
+            ui.note("A game day passes in about 20 minutes (DayNight.ClockSpeed 72). Going back to the main menu lets go " ..
+                    "of a held time or pile.")
         end, { id = "world-time", open = true })
         ui.section("Fresh-kill pile", function()
             if not s.fk then
@@ -69,21 +70,143 @@ return function(P)
     local folder = Game.save.folder and Game.save.folder()
                    or (Game.save.path():gsub("[\\/]SaveGames[\\/][^\\/]*$", "\\WCMods"))
     local PLACES = folder .. "\\places.json"
-    local places = { list = nil, name = "" }
+    local NEW, OLD = PLACES .. ".new", PLACES .. ".old"
+    -- places.list: the spots as read (again with "Read it again"). Anything but no file yet, an empty one or
+    -- one list of spots isn't written over: places.bad says why (places.fix what to do, when it's not "fix or
+    -- move it"), and saving waits until it's fixed or moved.
+    local places = { list = nil, name = "", bad = nil, fix = nil }
+    -- Where the list that starts at i ends (its "]"), skipping strings; nil if it doesn't. Game.json.decode
+    -- stops after the first value, so this is how text after the list is caught.
+    local function listEnd(text, i)
+        local depth, inString, escaped = 0, false, false
+        for j = i, #text do
+            local c = text:sub(j, j)
+            if inString then
+                if escaped then escaped = false
+                elseif c == "\\" then escaped = true
+                elseif c == '"' then inString = false end
+            elseif c == '"' then inString = true
+            elseif c == "[" or c == "{" then depth = depth + 1
+            elseif c == "]" or c == "}" then
+                depth = depth - 1
+                if depth == 0 then return j end
+            end
+        end
+        return nil
+    end
+    -- An SDK error without the "...\WCModsGame.lua:499: " that says where in wcmods it was raised (the decoder's
+    -- error, an assert in Menu.saveJson): that says nothing about the file.
+    local function unplace(err) return (tostring(err):gsub("^.-:%d+: ", "")) end
+    -- The spots in a file: its list, or nil, why and (when it couldn't be opened) io.open's error code, 2 for
+    -- no file. An empty file is no spots, and says so (true after the list).
+    local function readList(path)
+        local f, err, code = io.open(path, "rb")
+        if not f then return nil, tostring(err), code end
+        local text, readErr = f:read("a")
+        f:close()
+        if not text then return nil, tostring(readErr) end
+        text = text:gsub("^\239\187\191", "")   -- a UTF-8 byte order mark (Notepad's)
+        local start = text:find("%S")
+        if not start then return {}, true end
+        local data, decodeErr = Game.json.decode(text)
+        local stop = text:sub(start, start) == "[" and listEnd(text, start)
+        if data == nil then return nil, unplace(decodeErr or "not JSON") end
+        if not stop or text:find("%S", stop + 1) then return nil, "not one list of spots" end
+        return data
+    end
     local function loadPlaces()
         if places.list then return places.list end
-        places.list = {}
-        local f = io.open(PLACES, "rb")
-        if f then
-            local data = Game.json.decode(f:read("a"))
-            f:close()
-            if type(data) == "table" then places.list = data end
+        places.list, places.bad, places.fix = {}, nil, nil
+        local list, why, code = readList(PLACES)
+        if list then
+            places.list = list
+        elseif code ~= 2 then
+            -- Anything but no file yet (another program holding it, say) isn't "no spots".
+            places.bad = why
+        else
+            -- No places.json. A save that didn't finish took it away: the new list is in places.json.new, written
+            -- and read back before places.json was moved to places.json.old, and the list before it is in .old.
+            -- The new list is taken and put in places.json's place, which finishes that save.
+            local new, newWhy, newCode = readList(NEW)
+            local old = io.open(OLD, "rb")
+            if old then old:close() end
+            if new and newWhy ~= true then
+                local moved, err = os.rename(NEW, PLACES)
+                places.list = new
+                if moved then
+                    -- The list before that save is out of date now (and, left there, would be taken for the one
+                    -- to rename back if places.json went missing again).
+                    os.remove(OLD)
+                    travel.note = "places.json was missing: the spots from its last save, left in places.json.new, " ..
+                                  "are back in it"
+                else
+                    places.bad = "it's missing, and places.json.new, which has the spots from its last save, couldn't " ..
+                                 "take its place (" .. tostring(err) .. ")"
+                    places.fix = "Rename places.json.new to places.json, then Read it again."
+                end
+            elseif old then
+                places.bad = "it's missing; places.json.old has the spots from before a save that didn't finish" ..
+                             (new == nil and newCode ~= 2 and (", and places.json.new is no good (" .. tostring(newWhy) .. ")") or "")
+                places.fix = "Rename places.json.old to places.json, then Read it again."
+            end
+            -- (A places.json.new that's empty or no good, with no places.json.old beside it, is from the first save,
+            -- stopped before it was written whole: there were no spots before it, and the next save writes over it.)
         end
         return places.list
     end
-    local function savePlaces()
-        local ok, err = Menu.saveJson(PLACES, Menu.list(places.list))
-        if not ok then travel.note = "Couldn't save the spots: " .. tostring(err) end
+    -- Write a new list of spots. It goes to places.json.new first and is read back before it takes the old
+    -- file's place, so a write that fails part way (a full disk) leaves the spots as they were; the new list
+    -- becomes the list only once it's in place.
+    local function savePlaces(list)
+        if places.bad then
+            return false, "places.json couldn't be read (" .. places.bad .. ")" ..
+                          (places.fix and (". " .. places.fix) or ", so it's left as it is")
+        end
+        -- A read-only places.json is left as it is: Windows would let it be moved aside, and the read-only
+        -- places.json.old couldn't then be removed, which would stop every save after.
+        local probe, perr, pcode = io.open(PLACES, "r+b")
+        if probe then
+            probe:close()
+        elseif pcode ~= 2 then
+            return false, "places.json can't be written (" .. tostring(perr) .. "): is it read-only, or open in another program?"
+        end
+        local ok, err = Menu.saveJson(NEW, Menu.list(list))
+        if not ok then err = unplace(err) end
+        if ok then
+            local back = readList(NEW)
+            if type(back) ~= "table" or #back ~= #list then ok, err = false, "it didn't write whole" end
+        end
+        if ok then
+            local gone, rerr, rcode = os.remove(OLD)
+            if not gone and rcode ~= 2 then ok, err = false, "couldn't remove places.json.old (" .. tostring(rerr) .. ")" end
+        end
+        if ok then
+            local had, aerr, acode = os.rename(PLACES, OLD)   -- (fails with 2 when there's no places.json yet)
+            if not had and acode ~= 2 then
+                ok, err = false, "couldn't move places.json aside (" .. tostring(aerr) .. ")"
+            else
+                ok, err = os.rename(NEW, PLACES)
+                if ok then
+                    os.remove(OLD)
+                else
+                    err = "couldn't put places.json.new in its place (" .. tostring(err) .. ")"
+                    if had and not os.rename(OLD, PLACES) then
+                        -- Nor could the old one be put back: there's no places.json now, and the page reads the
+                        -- file again.
+                        err = err .. "; the spots are in places.json.old now"
+                        places.list = nil
+                    end
+                end
+            end
+        end
+        os.remove(NEW)
+        if ok then places.list = list end
+        return ok, err
+    end
+    local function copy(list)
+        local out = {}
+        for i, v in ipairs(list) do out[i] = v end
+        return out
     end
     local spots = { at = -1, checkpoints = {}, areas = {} }
     local function findSpots()
@@ -127,31 +250,57 @@ return function(P)
         local hit = ui.buttons({ "Back", "Save this spot" })
         if hit == 1 and travel.back then jump(travel.back, "where you were", true) end
         if hit == 2 then
-            local list = loadPlaces()
+            places.list = nil   -- from the file as it is now, so a hand edit made while the game runs isn't written over
+            local list = copy(loadPlaces())
             local name = places.name ~= "" and places.name or string.format("Spot %d", #list + 1)
             list[#list + 1] = { name = name, level = Game.levelName(), X = here.X, Y = here.Y, Z = here.Z }
-            savePlaces()
-            travel.note = "Saved " .. name
-            places.name = ""
+            local ok, err = savePlaces(list)
+            if ok then
+                travel.note, places.name = "Saved " .. name, ""
+            else
+                travel.note = "Couldn't save the spot: " .. tostring(err)
+            end
         end
         places.name = ui.input("Name for a saved spot", places.name, { hint = "e.g. the big oak" })
 
         ui.section("Saved spots", function()
             local list, level, shown = loadPlaces(), Game.levelName(), 0
-            for i, p in ipairs(list) do
-                if p.level == level then
+            if places.bad then
+                ui.text("places.json couldn't be read (" .. places.bad .. "). " ..
+                        (places.fix or "It's left as it is: fix or move it, then Read it again."), { color = P.THEME.danger })
+            end
+            for _, p in ipairs(list) do
+                -- (a spot without a place, from a hand edit, is kept in the file but has no button)
+                if type(p) == "table" and p.level == level and tonumber(p.X) and tonumber(p.Y) and tonumber(p.Z) then
                     shown = shown + 1
                     local h = ui.buttons({ "Go: " .. tostring(p.name), "Forget" }, { kinds = { "primary", "danger" } })
-                    if h == 1 then jump({ X = p.X, Y = p.Y, Z = p.Z }, tostring(p.name), true)
+                    if h == 1 then jump({ X = tonumber(p.X), Y = tonumber(p.Y), Z = tonumber(p.Z) }, tostring(p.name), true)
                     elseif h == 2 then
-                        table.remove(list, i)
-                        savePlaces()
+                        -- From the file as it is now (as Save), and this spot by what it is, not where it was in the list.
+                        places.list = nil
+                        local rest, at = copy(loadPlaces()), nil
+                        for j, q in ipairs(rest) do
+                            if type(q) == "table" and q.name == p.name and q.level == p.level and q.X == p.X and q.Y == p.Y
+                                and q.Z == p.Z then
+                                at = j
+                                break
+                            end
+                        end
+                        if at or places.bad then
+                            if at then table.remove(rest, at) end
+                            local ok, err = savePlaces(rest)
+                            travel.note = ok and ("Forgot " .. tostring(p.name)) or ("Couldn't forget it: " .. tostring(err))
+                        else
+                            travel.note = tostring(p.name) .. " isn't in places.json any more (it was edited since); the " ..
+                                          "list below is the file as it is now."
+                        end
                         break
                     end
                 end
             end
-            if shown == 0 then ui.note("None yet. Name a spot above and press Save this spot.") end
+            if shown == 0 and not places.bad then ui.note("None yet. Name a spot above and press Save this spot.") end
             ui.note("Kept in " .. PLACES .. ".")
+            if ui.button("Read it again") then places.list, travel.note = nil, nil end
         end, { id = "travel-saved", open = true })
 
         local found = findSpots()
@@ -273,6 +422,11 @@ return function(P)
     local itemName = P.itemName
     local drop = { item = ITEMS[1], count = 1, note = nil }
     local CATEGORY = { Consumable = "Herbs and pouches", Materials = "Materials", Cosmetic = "Accessories", Decoration = "Den decorations" }
+    -- What you carry: Game.items.list reads and decodes the whole save file, so it's read every ten seconds
+    -- (for the game's saves), and at once when you pick something up or there's another cat (another save).
+    local inventory = { at = -1, items = {} }
+    Game.on("itemPickedUp", function() inventory.at = -1 end)
+    Game.on("player", function() inventory.at = -1 end)
     Menu.page("Items", function(ui)
         ui.heading("Items")
         if not Game.cat() then
@@ -280,7 +434,8 @@ return function(P)
             return
         end
         ui.note("As of the game's last save, with what you've picked up since.")
-        local items, groups = Game.items.list(), {}
+        if inventory.at < 0 or os.clock() - inventory.at > 10 then inventory.at, inventory.items = os.clock(), Game.items.list() end
+        local items, groups = inventory.items, {}
         for tag, n in pairs(items) do
             local cat = tostring(tag):match("^Gameplay%.Inventory%.(%w+)%.") or "Other"
             groups[cat] = groups[cat] or {}

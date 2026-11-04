@@ -19,11 +19,14 @@ return function(P)
             end
             local q = Game.quests.describe(tracked)
             ui.columns({ { "Quest", questTitle(q) }, { "State", STATUS_TEXT[q.status] or q.status or "?" }, { "Kind", q.type or "?" } })
-            for i, o in ipairs(Game.quests.objectives(tracked)) do
+            for i, o in ipairs(P.objectives(tracked)) do
                 local label = string.format("Objective %d", i)
                 local progress = (o.target and o.target > 0) and string.format("%d / %d", o.current or 0, o.target) or ""
                 ui.field(label, (o.status or "?") .. (progress ~= "" and ("   " .. progress) or ""))
-                if o.point and ui.button("Go to objective " .. i) then P.jump(Game.cat(o.point):location(), "the objective") end
+                if o.point and ui.button("Go to objective " .. i) then
+                    local point = Game.cat(o.point)   -- (nil once the game has unloaded it)
+                    if point then P.jump(point:location(), "the objective") end
+                end
             end
         end, { id = "quests-tracked", open = true })
         questView.filter = ui.radio("Show", questView.filter, { "Active", "Available", "Done", "All" })

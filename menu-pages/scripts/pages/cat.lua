@@ -22,8 +22,7 @@ return function(P)
             ui.field("Experience", s.level == 20 and "top level" or tostring(s.xp or "?"))
         end
         ui.columns({ { "Territory", s.territory or "?" }, { "Area", s.area or "(shows once you cross into one)" },
-                     { "Time", s.h and string.format("%02d:%02d", s.h, s.m or 0) or "?" },
-                     { "Fresh-kill pile", s.fk and string.format("%.0f, %s", s.fk, s.fkLevel or "?") or "?" } })
+                     { "Time", P.timeText(s) or "?" }, { "Fresh-kill pile", P.pileText(s) or "?" } })
         local tracked = Game.quests.tracked()
         local followed = nil
         if tracked then followed = P.questTitle(Game.quests.describe(tracked)) end
@@ -32,10 +31,39 @@ return function(P)
         local hit = ui.buttons({ "Heal", "Full stamina", "Morning", "Evening" }, { kinds = { "good" } })
         if hit == 1 then s.cat:heal()
         elseif hit == 2 and s.maxst then s.cat:setStamina(s.maxst)
-        elseif hit == 3 then Game.time.set(7, 0)
-        elseif hit == 4 then Game.time.set(19, 0) end
+        elseif hit == 3 then P.setTime(7, 0)
+        elseif hit == 4 then P.setTime(19, 0) end
         if hit then refresh() end
     end, { order = 1, group = "home" })
+
+    -- Traits come from the last save, which takes reading and decoding the whole save file: every ten
+    -- seconds is plenty.
+    local traits = { at = -1, text = "" }
+    -- A number box's options with its range stretched to take the value it shows: a box clamps a value
+    -- outside its range, and that would look like you changing it (and write the clamped value to the game).
+    -- It stretches past the value to the next power of two, so there's room to raise it too. Each box keeps
+    -- its range (by its label) while the value is the one the box gave back (gave, after the box): a range
+    -- worked out again from each value written would double with each drag to the top, and a box whose range
+    -- changes goes back to the game's value mid-drag. When the game or a script changes the value, the range
+    -- is worked out again, so it comes back down too. (wcmods' own number box does the same from #112 on.)
+    local ranges = {}
+    Game.on("player", function() traits.at, ranges = -1, {} end)   -- another cat (another save)
+    local function around(label, v, lo, hi, opts)
+        local r = ranges[label]
+        if not r or r.lo0 ~= lo or r.hi0 ~= hi
+           or (r.gave and math.abs(r.gave - v) > math.max(1e-3, math.abs(v) * 1e-6)) then   -- (a float's rounding)
+            r = { lo0 = lo, hi0 = hi, lo = lo, hi = hi }
+            ranges[label] = r
+        end
+        if v > r.hi then r.hi = 2 ^ (math.floor(math.log(v, 2)) + 1) end
+        if v < r.lo then r.lo = v < 0 and -2 ^ (math.floor(math.log(-v, 2)) + 1) or 0 end
+        opts.min, opts.max = r.lo, r.hi
+        return opts
+    end
+    local function gave(label, v)
+        if ranges[label] then ranges[label].gave = v end
+        return v
+    end
 
     Menu.page("Stats", function(ui)
         ui.heading("Your cat")
@@ -47,8 +75,8 @@ return function(P)
         end
         ui.note("Live values. A change applies at once and lasts until the game changes it again (a level-up, a fight, " ..
                 "loading); the game saves what it holds at its next save.")
-        ui.columns({ { "Name", s.name or "?" }, { "Clan", s.clan or "?" }, { "Rank", s.rank or "?" },
-                     { "Traits", table.concat(cat:traits(), ", ") } })
+        if traits.at < 0 or os.clock() - traits.at > 10 then traits.at, traits.text = os.clock(), table.concat(cat:traits(), ", ") end
+        ui.columns({ { "Name", s.name or "?" }, { "Clan", s.clan or "?" }, { "Rank", s.rank or "?" }, { "Traits", traits.text } })
         if s.hp and s.maxhp then
             local hp = ui.slider("Health", s.hp, 0, s.maxhp, { step = 1, format = "%.0f", color = "#e06c6c" })
             if changed(hp, s.hp) then cat:setHealth(hp) refresh() end
@@ -59,20 +87,26 @@ return function(P)
         end
         local regen = cat:staminaRegen()
         if regen then
-            local r = ui.number("Stamina back per second", regen, { min = 0, max = 500, step = 1 })
+            local r = gave("regen", ui.number("Stamina back per second", regen, around("regen", regen, 0, 500, { step = 1 })))
             if changed(r, regen) then cat:setStaminaRegen(r) end
         end
         ui.field("Fight stamina", string.format("%s (0.4 x Prowess + Stamina)", tostring(cat:maxCombatStamina())))
         local scale = cat:scale()
-        if scale then
+        if scale and P.sizeHeld and P.sizeHeld() then
+            -- The Cheats page's Cat size puts the size back each second, so a slider here would be undone.
+            ui.field("Size", string.format("x%.2f   (Cat size on the Cheats page holds it)", scale))
+        elseif scale then
             local size = ui.slider("Size", scale, 0.25, 4, { step = 0.05, format = "x%.2f" })
             if changed(size, scale) then cat:setScale(size) end
         end
+        -- The level is a whole number in the game; experience and the stats are fractional (FloatProperty), so
+        -- their boxes aren't whole-number ones: a whole-number box rounds what it shows, which reads as a
+        -- change and would write the rounded value back to your cat just by opening this page.
         ui.section("Level and experience", function()
-            local lv = ui.number("Level", s.level or 1, { min = 1, max = 20, step = 1, whole = true })
+            local lv = gave("level", ui.number("Level", s.level or 1, around("level", s.level or 1, 1, 20, { step = 1, whole = true })))
             if changed(lv, s.level) then cat:setLevel(math.floor(lv + 0.5)) refresh() end
             if s.xpNeeded and s.xpNeeded > 0 then
-                local xp = ui.number("Experience", s.xp or 0, { min = 0, max = s.xpNeeded, step = 10, whole = true })
+                local xp = gave("xp", ui.number("Experience", s.xp or 0, around("xp", s.xp or 0, 0, s.xpNeeded, { step = 10 })))
                 if changed(xp, s.xp) then cat:setXp(xp) refresh() end
                 ui.field("Needed for the next level", string.format("%.0f", s.xpNeeded))
             end
@@ -83,7 +117,7 @@ return function(P)
             for _, name in ipairs(Game.statNames) do
                 local v = stats[name]
                 if v then
-                    local nv = ui.number(name, v, { min = 0, max = 2000, step = 1, whole = true })
+                    local nv = gave("stat " .. name, ui.number(name, v, around("stat " .. name, v, 0, 2000, { step = 1 })))
                     if changed(nv, v) then cat:setStat(name, nv) end
                 end
             end
