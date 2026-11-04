@@ -35,11 +35,15 @@ end
 local TERRITORY = { "ThunderClan", "ShadowClan", "RiverClan", "WindClan", "Moonpool", "the Island" }   -- ELocationsType 1-6
 
 -- Where your cat is: the territory the game puts it in, and the last area whose name the game showed
--- (the area gates tell the game when the cat crosses into one).
+-- (the area gates tell the game when the cat crosses into one). Forgotten at the main menu, so another save
+-- doesn't start with this one's area.
 local lastArea = nil
 Game.hook("/Script/Wrc.WrcZoneNameTrigger:OnOverlapBegin", function(self, _, other)
     local p = Game.player()
     if p and valid(other) and other:GetAddress() == p:GetAddress() then lastArea = Game.str(self.ZoneCode) end
+end)
+Game.on("level", function(level)
+    if tostring(level or ""):find("MainMenu", 1, true) then lastArea = nil end
 end)
 local function territory()
     local lib, loc, px = Game.library("AdventureGameState"), {}, {}

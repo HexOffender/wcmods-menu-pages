@@ -71,9 +71,10 @@ return function(P)
                    or (Game.save.path():gsub("[\\/]SaveGames[\\/][^\\/]*$", "\\WCMods"))
     local PLACES = folder .. "\\places.json"
     local NEW, OLD = PLACES .. ".new", PLACES .. ".old"
-    -- places.list: the spots as read (again with "Read it again"). Anything but no file yet or one list of
-    -- spots isn't written over: places.bad says why, and saving waits until it's fixed or moved.
-    local places = { list = nil, name = "", bad = nil }
+    -- places.list: the spots as read (again with "Read it again"). Anything but no file yet, an empty one or
+    -- one list of spots isn't written over: places.bad says why (places.fix what to do, when it's not "fix or
+    -- move it"), and saving waits until it's fixed or moved.
+    local places = { list = nil, name = "", bad = nil, fix = nil }
     -- Where the list that starts at i ends (its "]"), skipping strings; nil if it doesn't. Game.json.decode
     -- stops after the first value, so this is how text after the list is caught.
     local function listEnd(text, i)
@@ -93,35 +94,63 @@ return function(P)
         end
         return nil
     end
-    local function loadPlaces()
-        if places.list then return places.list end
-        places.list, places.bad = {}, nil
-        local f, err, code = io.open(PLACES, "rb")
-        if not f then
-            -- 2: there's no file yet. Anything else, such as another program holding it, isn't "no spots".
-            if code ~= 2 then places.bad = tostring(err) return places.list end
-            local old = io.open(OLD, "rb")
-            if old then
-                old:close()
-                places.bad = "it's missing, and places.json.old is there from a save that stopped part way: rename that " ..
-                             "to places.json"
-            end
-            return places.list
-        end
+    -- An SDK error without the "...\WCModsGame.lua:499: " that says where in wcmods it was raised (the decoder's
+    -- error, an assert in Menu.saveJson): that says nothing about the file.
+    local function unplace(err) return (tostring(err):gsub("^.-:%d+: ", "")) end
+    -- The spots in a file: its list, or nil, why and (when it couldn't be opened) io.open's error code, 2 for
+    -- no file. An empty file is no spots, and says so (true after the list).
+    local function readList(path)
+        local f, err, code = io.open(path, "rb")
+        if not f then return nil, tostring(err), code end
         local text, readErr = f:read("a")
         f:close()
-        if not text then places.bad = tostring(readErr) return places.list end
+        if not text then return nil, tostring(readErr) end
         text = text:gsub("^\239\187\191", "")   -- a UTF-8 byte order mark (Notepad's)
         local start = text:find("%S")
-        if not start then return places.list end
+        if not start then return {}, true end
         local data, decodeErr = Game.json.decode(text)
         local stop = text:sub(start, start) == "[" and listEnd(text, start)
-        if data == nil then
-            places.bad = tostring(decodeErr or "not JSON")
-        elseif not stop or text:find("%S", stop + 1) then
-            places.bad = "not one list of spots"
+        if data == nil then return nil, unplace(decodeErr or "not JSON") end
+        if not stop or text:find("%S", stop + 1) then return nil, "not one list of spots" end
+        return data
+    end
+    local function loadPlaces()
+        if places.list then return places.list end
+        places.list, places.bad, places.fix = {}, nil, nil
+        local list, why, code = readList(PLACES)
+        if list then
+            places.list = list
+        elseif code ~= 2 then
+            -- Anything but no file yet (another program holding it, say) isn't "no spots".
+            places.bad = why
         else
-            places.list = data
+            -- No places.json. A save that didn't finish took it away: the new list is in places.json.new, written
+            -- and read back before places.json was moved to places.json.old, and the list before it is in .old.
+            -- The new list is taken and put in places.json's place, which finishes that save.
+            local new, newWhy, newCode = readList(NEW)
+            local old = io.open(OLD, "rb")
+            if old then old:close() end
+            if new and newWhy ~= true then
+                local moved, err = os.rename(NEW, PLACES)
+                places.list = new
+                if moved then
+                    -- The list before that save is out of date now (and, left there, would be taken for the one
+                    -- to rename back if places.json went missing again).
+                    os.remove(OLD)
+                    travel.note = "places.json was missing: the spots from its last save, left in places.json.new, " ..
+                                  "are back in it"
+                else
+                    places.bad = "it's missing, and places.json.new, which has the spots from its last save, couldn't " ..
+                                 "take its place (" .. tostring(err) .. ")"
+                    places.fix = "Rename places.json.new to places.json, then Read it again."
+                end
+            elseif old then
+                places.bad = "it's missing; places.json.old has the spots from before a save that didn't finish" ..
+                             (new == nil and newCode ~= 2 and (", and places.json.new is no good (" .. tostring(newWhy) .. ")") or "")
+                places.fix = "Rename places.json.old to places.json, then Read it again."
+            end
+            -- (A places.json.new that's empty or no good, with no places.json.old beside it, is from the first save,
+            -- stopped before it was written whole: there were no spots before it, and the next save writes over it.)
         end
         return places.list
     end
@@ -129,22 +158,45 @@ return function(P)
     -- file's place, so a write that fails part way (a full disk) leaves the spots as they were; the new list
     -- becomes the list only once it's in place.
     local function savePlaces(list)
-        if places.bad then return false, "places.json couldn't be read (" .. places.bad .. "), so it's left as it is" end
+        if places.bad then
+            return false, "places.json couldn't be read (" .. places.bad .. ")" ..
+                          (places.fix and (". " .. places.fix) or ", so it's left as it is")
+        end
+        -- A read-only places.json is left as it is: Windows would let it be moved aside, and the read-only
+        -- places.json.old couldn't then be removed, which would stop every save after.
+        local probe, perr, pcode = io.open(PLACES, "r+b")
+        if probe then
+            probe:close()
+        elseif pcode ~= 2 then
+            return false, "places.json can't be written (" .. tostring(perr) .. "): is it read-only, or open in another program?"
+        end
         local ok, err = Menu.saveJson(NEW, Menu.list(list))
+        if not ok then err = unplace(err) end
         if ok then
-            local f = io.open(NEW, "rb")
-            local back = f and Game.json.decode(f:read("a") or "")
-            if f then f:close() end
+            local back = readList(NEW)
             if type(back) ~= "table" or #back ~= #list then ok, err = false, "it didn't write whole" end
         end
         if ok then
-            os.remove(OLD)
-            local had = os.rename(PLACES, OLD)   -- (nil when there's no places.json yet)
-            ok, err = os.rename(NEW, PLACES)
-            if ok then
-                os.remove(OLD)
-            elseif had then
-                os.rename(OLD, PLACES)
+            local gone, rerr, rcode = os.remove(OLD)
+            if not gone and rcode ~= 2 then ok, err = false, "couldn't remove places.json.old (" .. tostring(rerr) .. ")" end
+        end
+        if ok then
+            local had, aerr, acode = os.rename(PLACES, OLD)   -- (fails with 2 when there's no places.json yet)
+            if not had and acode ~= 2 then
+                ok, err = false, "couldn't move places.json aside (" .. tostring(aerr) .. ")"
+            else
+                ok, err = os.rename(NEW, PLACES)
+                if ok then
+                    os.remove(OLD)
+                else
+                    err = "couldn't put places.json.new in its place (" .. tostring(err) .. ")"
+                    if had and not os.rename(OLD, PLACES) then
+                        -- Nor could the old one be put back: there's no places.json now, and the page reads the
+                        -- file again.
+                        err = err .. "; the spots are in places.json.old now"
+                        places.list = nil
+                    end
+                end
             end
         end
         os.remove(NEW)
@@ -214,8 +266,8 @@ return function(P)
         ui.section("Saved spots", function()
             local list, level, shown = loadPlaces(), Game.levelName(), 0
             if places.bad then
-                ui.text("places.json couldn't be read (" .. places.bad .. "). It's left as it is: fix or move it, then " ..
-                        "Read it again.", { color = P.THEME.danger })
+                ui.text("places.json couldn't be read (" .. places.bad .. "). " ..
+                        (places.fix or "It's left as it is: fix or move it, then Read it again."), { color = P.THEME.danger })
             end
             for _, p in ipairs(list) do
                 -- (a spot without a place, from a hand edit, is kept in the file but has no button)
@@ -248,7 +300,7 @@ return function(P)
             end
             if shown == 0 and not places.bad then ui.note("None yet. Name a spot above and press Save this spot.") end
             ui.note("Kept in " .. PLACES .. ".")
-            if ui.button("Read it again") then places.list = nil end
+            if ui.button("Read it again") then places.list, travel.note = nil, nil end
         end, { id = "travel-saved", open = true })
 
         local found = findSpots()
