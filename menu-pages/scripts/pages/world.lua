@@ -69,31 +69,84 @@ return function(P)
     local folder = Game.save.folder and Game.save.folder()
                    or (Game.save.path():gsub("[\\/]SaveGames[\\/][^\\/]*$", "\\WCMods"))
     local PLACES = folder .. "\\places.json"
-    -- places.list: the spots as read (again with "Read it again"). A file that can't be read as a list isn't
-    -- written over: places.bad says why, and saving waits until it's fixed or moved.
+    local NEW, OLD = PLACES .. ".new", PLACES .. ".old"
+    -- places.list: the spots as read (again with "Read it again"). Anything but no file yet or one list of
+    -- spots isn't written over: places.bad says why, and saving waits until it's fixed or moved.
     local places = { list = nil, name = "", bad = nil }
+    -- Where the list that starts at i ends (its "]"), skipping strings; nil if it doesn't. Game.json.decode
+    -- stops after the first value, so this is how text after the list is caught.
+    local function listEnd(text, i)
+        local depth, inString, escaped = 0, false, false
+        for j = i, #text do
+            local c = text:sub(j, j)
+            if inString then
+                if escaped then escaped = false
+                elseif c == "\\" then escaped = true
+                elseif c == '"' then inString = false end
+            elseif c == '"' then inString = true
+            elseif c == "[" or c == "{" then depth = depth + 1
+            elseif c == "]" or c == "}" then
+                depth = depth - 1
+                if depth == 0 then return j end
+            end
+        end
+        return nil
+    end
     local function loadPlaces()
         if places.list then return places.list end
         places.list, places.bad = {}, nil
-        local f = io.open(PLACES, "rb")
-        if not f then return places.list end
-        local text = f:read("a")
+        local f, err, code = io.open(PLACES, "rb")
+        if not f then
+            -- 2: there's no file yet. Anything else, such as another program holding it, isn't "no spots".
+            if code ~= 2 then places.bad = tostring(err) return places.list end
+            local old = io.open(OLD, "rb")
+            if old then
+                old:close()
+                places.bad = "it's missing, and places.json.old is there from a save that stopped part way: rename that " ..
+                             "to places.json"
+            end
+            return places.list
+        end
+        local text, readErr = f:read("a")
         f:close()
-        if not text:find("%S") then return places.list end
-        local data, err = Game.json.decode(text)
-        if type(data) ~= "table" then
-            places.bad = tostring(err or "not JSON")
-        elseif next(data) ~= nil and #data == 0 then
-            places.bad = "not a list of spots"
+        if not text then places.bad = tostring(readErr) return places.list end
+        text = text:gsub("^\239\187\191", "")   -- a UTF-8 byte order mark (Notepad's)
+        local start = text:find("%S")
+        if not start then return places.list end
+        local data, decodeErr = Game.json.decode(text)
+        local stop = text:sub(start, start) == "[" and listEnd(text, start)
+        if data == nil then
+            places.bad = tostring(decodeErr or "not JSON")
+        elseif not stop or text:find("%S", stop + 1) then
+            places.bad = "not one list of spots"
         else
             places.list = data
         end
         return places.list
     end
-    -- Write a new list of spots; it becomes the list only once it's written.
+    -- Write a new list of spots. It goes to places.json.new first and is read back before it takes the old
+    -- file's place, so a write that fails part way (a full disk) leaves the spots as they were; the new list
+    -- becomes the list only once it's in place.
     local function savePlaces(list)
         if places.bad then return false, "places.json couldn't be read (" .. places.bad .. "), so it's left as it is" end
-        local ok, err = Menu.saveJson(PLACES, Menu.list(list))
+        local ok, err = Menu.saveJson(NEW, Menu.list(list))
+        if ok then
+            local f = io.open(NEW, "rb")
+            local back = f and Game.json.decode(f:read("a") or "")
+            if f then f:close() end
+            if type(back) ~= "table" or #back ~= #list then ok, err = false, "it didn't write whole" end
+        end
+        if ok then
+            os.remove(OLD)
+            local had = os.rename(PLACES, OLD)   -- (nil when there's no places.json yet)
+            ok, err = os.rename(NEW, PLACES)
+            if ok then
+                os.remove(OLD)
+            elseif had then
+                os.rename(OLD, PLACES)
+            end
+        end
+        os.remove(NEW)
         if ok then places.list = list end
         return ok, err
     end

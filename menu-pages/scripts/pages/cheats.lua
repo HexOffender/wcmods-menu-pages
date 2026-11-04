@@ -98,8 +98,9 @@ return function(P)
         return cm
     end
 
-    -- Game speed: the world's time dilation. speedNow reads it, so the page shows what the game has (after
-    -- a `slomo`, or a new level that put it back to 1).
+    -- Game speed: the world's time dilation. cheats.speed is the speed chosen here, which the timer below sets
+    -- again in a new level; speedNow reads what the game has, which the page shows when it's different (a
+    -- `slomo`, or a new level before the timer has set it again).
     local function setSpeed(c, v)
         local ok, err = pcall(function() statics():SetGlobalTimeDilation(c, v) end)
         if ok then cheats.speedSet = true else logOnce("game speed", err) end
@@ -213,7 +214,7 @@ return function(P)
     -- bases: each cat's own scale (the game's) by its address, and the size this set it to. A cat that still
     -- has that size keeps its base, so coming back to it (after the controller had another pawn, in a fight)
     -- doesn't take the size this set for the cat's own and grow it again.
-    local bases = {}
+    local bases, basesFor = {}, nil   -- basesFor: the controller they're for
 
     local function setSize(c, f)
         local pawn = pawnOf(c)
@@ -266,10 +267,12 @@ return function(P)
         local pawn = c and pawnOf(c)
         if not pawn then return end
         if not cheatManager(c) then
-            makeCheatManager(c)
+            if not makeCheatManager(c) then return end   -- (tried again next second)
             cheats.god = false
-            bases = {}   -- the old level's cats are gone, and their addresses may be reused
         end
+        -- A new controller is a new level: its cats are new, and the old ones' addresses may be reused. (Only
+        -- then: forgetting a cat's base while it still has the size this set would grow it again.)
+        if c:GetAddress() ~= basesFor then bases, basesFor = {}, c:GetAddress() end
         if cheats.speed ~= 1 and not cheats.speedSet then setSpeed(c, cheats.speed) end
         if cheats.size ~= 1 then
             local rec, now = bases[pawn:GetAddress()], pawn:GetActorScale3D()
@@ -344,14 +347,18 @@ return function(P)
         else
             ui.note("Movement cheats show once you're in the world.")
         end
-        -- The speed the game has now (after a `slomo` too), unless a new level put it back to 1 and the timer
-        -- above is about to set it again.
-        local actual = speedNow(c)
-        if actual and (cheats.speedSet or cheats.speed == 1) then cheats.speed = actual end
         local speed = ui.slider("Game speed", cheats.speed, 0.1, 4, { step = 0.05, format = "x%.2f" })
         if math.abs(speed - cheats.speed) > 0.001 then
             cheats.speed = speed
             setSpeed(c, speed)
+        end
+        local actual = speedNow(c)
+        if actual and math.abs(actual - cheats.speed) > 0.005 then
+            local pending = not cheats.speedSet and cheats.speed ~= 1   -- a new level the timer hasn't set yet
+            ui.note(pending and string.format("The game runs at x%.2f now: a new level, which this sets to x%.2f again " ..
+                                              "within a second.", actual, cheats.speed)
+                    or string.format("The game runs at x%.2f now (a `slomo` in the console?). Move the slider to set " ..
+                                     "it.", actual))
         end
 
         ui.separator()
