@@ -2,6 +2,11 @@
 return function(P)
     local Menu, THEME, words, itemName = P.Menu, P.THEME, P.words, P.itemName
 
+    -- A fighter's cat by its actor, or nil. Not x:cat() or f:current(): Game.cat(nil) is your own cat, so a
+    -- fighter whose body can't be read (or no one's turn) would show as you, and Weaken would hit you.
+    local function catAt(actor) return actor and Game.cat(actor) or nil end
+    local function catOf(x) return catAt(x:actor()) end
+
     -- Extra drops. What a beaten animal gives comes from the game's character table, not from the
     -- fighter's own list (changing that list changes nothing), so the extra is handed out after the fight
     -- instead: a pickup by your cat holding as much again, once the fight is won.
@@ -10,7 +15,7 @@ return function(P)
         local f = Game.fight()
         if f then
             for _, x in ipairs(f:enemies()) do
-                local cat = x:cat()
+                local cat = catOf(x)
                 if cat then extra.enemies[tostring(cat.actor:GetAddress())] = cat:health() end
             end
             return
@@ -32,7 +37,7 @@ return function(P)
     end)
 
     local function fighterRows(ui, x, enemy)
-        local cat = x:cat()
+        local cat = catOf(x)
         if not cat then return end
         local label = cat:name() or words(cat:kind() or "?")
         ui.text(label .. (enemy and ("   (" .. words(cat:kind() or "") .. ")") or ""), { color = THEME.heading })
@@ -81,7 +86,7 @@ return function(P)
         if #more > 0 then ui.note("Extra drops if you win (by your cat after the fight): " .. table.concat(more, ", ")) end
         local order = {}
         for _, c in ipairs(f:turnOrder()) do order[#order + 1] = c:name() or words(c:kind() or "?") end
-        local cur = f:current()
+        local cur = catAt(Game.get(f.director, "CurrentTurnAttackCharacter"))
         ui.columns({ { "Fight", words((f:kind() or ""):gsub("^BP_", ""):gsub("_C$", "")) }, { "Turn order", table.concat(order, ", ") },
                      { "Whose turn", cur and (cur:name() or words(cur:kind() or "?")) or "?" } })
         ui.section("Your side", function()

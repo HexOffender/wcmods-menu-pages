@@ -71,6 +71,25 @@ function P.now()
 end
 function P.refresh() snap.at = -1 end
 
+-- Held values: the World page can hold the time of day and keep the fresh-kill pile up, even with the
+-- menu closed (its timer is in world.lua). They're here so every page's time buttons move the held time
+-- too, and so the status line and At a glance can say they're on.
+P.hold = { time = false, timeAt = 12 * 3600, pile = false, pileAt = 100 }
+function P.setTime(h, m)
+    Game.time.set(h, m or 0)
+    P.hold.timeAt = h * 3600 + (m or 0) * 60
+    P.refresh()
+end
+-- "07:00", "07:00 (held)"; "80, Abundant", "80, Abundant (kept at 70+)".
+function P.timeText(s)
+    if not s.h then return nil end
+    return string.format("%02d:%02d", s.h, s.m or 0) .. (P.hold.time and " (held)" or "")
+end
+function P.pileText(s)
+    if not s.fk then return nil end
+    return string.format("%.0f, %s", s.fk, s.fkLevel or "?") .. (P.hold.pile and string.format(" (kept at %.0f+)", P.hold.pileAt) or "")
+end
+
 -- The line under the menu's title: how your cat is doing. "" before you're in the world (the menu's own
 -- line shows then).
 function P.statusLine()
@@ -80,8 +99,8 @@ function P.statusLine()
     if s.hp then parts[#parts + 1] = string.format("health %.0f/%.0f", s.hp, s.maxhp or s.hp) end
     if s.st then parts[#parts + 1] = string.format("stamina %.0f", s.st) end
     if s.territory then parts[#parts + 1] = s.territory .. (s.area and (", " .. s.area) or "") end
-    if s.h then parts[#parts + 1] = string.format("%02d:%02d", s.h, s.m or 0) end
-    if s.fk then parts[#parts + 1] = string.format("fresh-kill %.0f (%s)", s.fk, s.fkLevel or "?") end
+    if s.h then parts[#parts + 1] = P.timeText(s) end
+    if s.fk then parts[#parts + 1] = "fresh-kill " .. P.pileText(s) end
     if s.fight then parts[#parts + 1] = "IN A FIGHT" end
     return table.concat(parts, "   |   ")
 end
@@ -112,6 +131,16 @@ function P.quests()
     if os.clock() - questCache.at > 1 then questCache = { at = os.clock(), list = Game.quests.all() } end
     return questCache.list
 end
-function P.questsChanged() questCache.at = -1 end
+-- A quest's objectives, read once a second (Game.quests.objectives looks through every objective object
+-- in the game, too much for every frame).
+local objectiveCache = { at = -1, quest = nil, list = {} }
+function P.objectives(q)
+    local addr = q and q:GetAddress()
+    if addr ~= objectiveCache.quest or os.clock() - objectiveCache.at > 1 then
+        objectiveCache = { at = os.clock(), quest = addr, list = Game.quests.objectives(q) }
+    end
+    return objectiveCache.list
+end
+function P.questsChanged() questCache.at, objectiveCache.at = -1, -1 end
 
 return P

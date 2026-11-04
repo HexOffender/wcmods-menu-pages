@@ -28,12 +28,16 @@ for _, group in ipairs({ "cat", "world", "story", "fight", "cheats" }) do
 end
 
 -- The status line: while the menu is open, twice a second. An older wcmods without Menu.status has the
--- menu's own line instead.
+-- menu's own line instead. The menu shows one script's line at a time (the last one set), so this one
+-- steps aside while another script's line is up, and comes back once that's cleared; it would otherwise
+-- write over it within a second, as its own line changes with the clock.
 if Menu.status then
     local shown = nil
     Game.every(0.5, function()
+        local up = Menu.shared and Menu.shared("status")   -- the line the menu has now (nil: can't tell)
+        if up ~= nil and up ~= "" and up ~= shown then return end
         local line = Menu.isOpen() and P.statusLine() or ""
-        if line ~= shown then
+        if line ~= (up or shown) then
             shown = line
             Menu.status(line)
         end

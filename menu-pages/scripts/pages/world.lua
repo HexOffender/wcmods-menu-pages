@@ -3,14 +3,18 @@ return function(P)
     local Menu, now, refresh, changed, valid = P.Menu, P.now, P.refresh, P.changed, P.valid
 
     -- Held values: the World page can hold the time of day and keep the fresh-kill pile up, even with the
-    -- menu closed.
-    local hold = { time = false, timeAt = 12 * 3600, pile = false, pileAt = 100 }
+    -- menu closed (P.hold, which the status line shows). Going back to the main menu lets go of them, so a
+    -- save loaded next doesn't start held.
+    local hold = P.hold
     Game.every(1, function()
         if hold.time then Game.time.setSeconds(hold.timeAt) end
         if hold.pile then
             local v = Game.freshKill.value()
             if v and v < hold.pileAt then Game.freshKill.set(hold.pileAt) end
         end
+    end)
+    Game.on("level", function(level)
+        if tostring(level or ""):find("MainMenu", 1, true) then hold.time, hold.pile = false, false end
     end)
 
     Menu.page("World", function(ui)
@@ -21,7 +25,7 @@ return function(P)
             return
         end
         ui.columns({ { "Territory", s.territory or "?" }, { "Area", s.area or "(shows once you cross into one)" },
-                     { "Time", string.format("%02d:%02d", s.h or 0, s.m or 0) }, { "Level", Game.levelName() or "?" } })
+                     { "Time", P.timeText(s) or "?" }, { "Level", Game.levelName() or "?" } })
         ui.section("Time of day", function()
             local hours = ui.slider("Clock", s.secs / 3600, 0, 23.99, { step = 0.25, format = "%.2f h" })
             if math.abs(hours - s.secs / 3600) > 0.2 then
@@ -31,11 +35,7 @@ return function(P)
             end
             local hit = ui.buttons({ "Dawn 6:00", "Noon", "Dusk 19:00", "Night 23:00" })
             local at = ({ 6, 12, 19, 23 })[hit or 0]
-            if at then
-                Game.time.set(at, 0)
-                hold.timeAt = at * 3600
-                refresh()
-            end
+            if at then P.setTime(at, 0) end
             local holding = ui.switch("Hold this time", hold.time)
             if holding and not hold.time then hold.timeAt = s.secs end
             hold.time = holding
@@ -69,21 +69,38 @@ return function(P)
     local folder = Game.save.folder and Game.save.folder()
                    or (Game.save.path():gsub("[\\/]SaveGames[\\/][^\\/]*$", "\\WCMods"))
     local PLACES = folder .. "\\places.json"
-    local places = { list = nil, name = "" }
+    -- places.list: the spots as read (again with "Read it again"). A file that can't be read as a list isn't
+    -- written over: places.bad says why, and saving waits until it's fixed or moved.
+    local places = { list = nil, name = "", bad = nil }
     local function loadPlaces()
         if places.list then return places.list end
-        places.list = {}
+        places.list, places.bad = {}, nil
         local f = io.open(PLACES, "rb")
-        if f then
-            local data = Game.json.decode(f:read("a"))
-            f:close()
-            if type(data) == "table" then places.list = data end
+        if not f then return places.list end
+        local text = f:read("a")
+        f:close()
+        if not text:find("%S") then return places.list end
+        local data, err = Game.json.decode(text)
+        if type(data) ~= "table" then
+            places.bad = tostring(err or "not JSON")
+        elseif next(data) ~= nil and #data == 0 then
+            places.bad = "not a list of spots"
+        else
+            places.list = data
         end
         return places.list
     end
-    local function savePlaces()
-        local ok, err = Menu.saveJson(PLACES, Menu.list(places.list))
-        if not ok then travel.note = "Couldn't save the spots: " .. tostring(err) end
+    -- Write a new list of spots; it becomes the list only once it's written.
+    local function savePlaces(list)
+        if places.bad then return false, "places.json couldn't be read (" .. places.bad .. "), so it's left as it is" end
+        local ok, err = Menu.saveJson(PLACES, Menu.list(list))
+        if ok then places.list = list end
+        return ok, err
+    end
+    local function copy(list)
+        local out = {}
+        for i, v in ipairs(list) do out[i] = v end
+        return out
     end
     local spots = { at = -1, checkpoints = {}, areas = {} }
     local function findSpots()
@@ -127,31 +144,42 @@ return function(P)
         local hit = ui.buttons({ "Back", "Save this spot" })
         if hit == 1 and travel.back then jump(travel.back, "where you were", true) end
         if hit == 2 then
-            local list = loadPlaces()
+            local list = copy(loadPlaces())
             local name = places.name ~= "" and places.name or string.format("Spot %d", #list + 1)
             list[#list + 1] = { name = name, level = Game.levelName(), X = here.X, Y = here.Y, Z = here.Z }
-            savePlaces()
-            travel.note = "Saved " .. name
-            places.name = ""
+            local ok, err = savePlaces(list)
+            if ok then
+                travel.note, places.name = "Saved " .. name, ""
+            else
+                travel.note = "Couldn't save the spot: " .. tostring(err)
+            end
         end
         places.name = ui.input("Name for a saved spot", places.name, { hint = "e.g. the big oak" })
 
         ui.section("Saved spots", function()
             local list, level, shown = loadPlaces(), Game.levelName(), 0
+            if places.bad then
+                ui.text("places.json couldn't be read (" .. places.bad .. "). It's left as it is: fix or move it, then " ..
+                        "Read it again.", { color = P.THEME.danger })
+            end
             for i, p in ipairs(list) do
-                if p.level == level then
+                -- (a spot without a place, from a hand edit, is kept in the file but has no button)
+                if type(p) == "table" and p.level == level and tonumber(p.X) and tonumber(p.Y) and tonumber(p.Z) then
                     shown = shown + 1
                     local h = ui.buttons({ "Go: " .. tostring(p.name), "Forget" }, { kinds = { "primary", "danger" } })
-                    if h == 1 then jump({ X = p.X, Y = p.Y, Z = p.Z }, tostring(p.name), true)
+                    if h == 1 then jump({ X = tonumber(p.X), Y = tonumber(p.Y), Z = tonumber(p.Z) }, tostring(p.name), true)
                     elseif h == 2 then
-                        table.remove(list, i)
-                        savePlaces()
+                        local rest = copy(list)
+                        table.remove(rest, i)
+                        local ok, err = savePlaces(rest)
+                        travel.note = ok and ("Forgot " .. tostring(p.name)) or ("Couldn't forget it: " .. tostring(err))
                         break
                     end
                 end
             end
-            if shown == 0 then ui.note("None yet. Name a spot above and press Save this spot.") end
+            if shown == 0 and not places.bad then ui.note("None yet. Name a spot above and press Save this spot.") end
             ui.note("Kept in " .. PLACES .. ".")
+            if ui.button("Read it again") then places.list = nil end
         end, { id = "travel-saved", open = true })
 
         local found = findSpots()
@@ -273,6 +301,10 @@ return function(P)
     local itemName = P.itemName
     local drop = { item = ITEMS[1], count = 1, note = nil }
     local CATEGORY = { Consumable = "Herbs and pouches", Materials = "Materials", Cosmetic = "Accessories", Decoration = "Den decorations" }
+    -- What you carry: Game.items.list reads and decodes the whole save file, so it's read every ten seconds
+    -- (for the game's saves), and at once when you pick something up.
+    local inventory = { at = -1, items = {} }
+    Game.on("itemPickedUp", function() inventory.at = -1 end)
     Menu.page("Items", function(ui)
         ui.heading("Items")
         if not Game.cat() then
@@ -280,7 +312,8 @@ return function(P)
             return
         end
         ui.note("As of the game's last save, with what you've picked up since.")
-        local items, groups = Game.items.list(), {}
+        if inventory.at < 0 or os.clock() - inventory.at > 10 then inventory.at, inventory.items = os.clock(), Game.items.list() end
+        local items, groups = inventory.items, {}
         for tag, n in pairs(items) do
             local cat = tostring(tag):match("^Gameplay%.Inventory%.(%w+)%.") or "Other"
             groups[cat] = groups[cat] or {}
