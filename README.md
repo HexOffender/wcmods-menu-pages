@@ -9,14 +9,15 @@ with) comes with wcmods. This mod adds the pages about the game, the same way an
 |---|---|
 | Home | **At a glance**: your cat's health, stamina and experience, where it is, the time, the fresh-kill pile, the quest you follow, and Heal, Full stamina, Morning and Evening |
 | Your cat | **Stats**: health, stamina and its regeneration, size, level and experience, the six stats |
-| World | **World** (the clock, which can be held, and the fresh-kill pile, which can be kept up; going back to the main menu lets go of both), **Travel** (saved spots, checkpoints, every area, and Back), **Nearby** (what's around your cat, marked on screen if you like), **Items** (what you carry, and an item to drop by your cat) |
+| World | **World** (the clock, which can be held, and the fresh-kill pile, which can be kept up; going back to the main menu lets go of both. On a wcmods with its one shared hold of the clock, `Game.time.hold`, the clock is held through that, so it and another script's hold, such as Tweaks' Hold the clock, don't fight: the last to hold it has it), **Travel** (saved spots, checkpoints, every area, and Back), **Nearby** (what's around your cat, marked on screen if you like), **Items** (what you carry, and an item to drop by your cat) |
 | Story | **Quests**: the one you follow and its objectives, with "Go to objective", and every quest by state, mods' own too |
 | Fight | **Fight**: both sides during a fight, with Heal, Weaken, Cure status and "Double what it drops" |
 | Cheats | **Cheats** (the engine's cheat manager: god mode, fly, ghost, cat size, game speed, teleport, engine commands), **Game switches** (the developers' own, with the game's own god mode as its four flags) |
 
-It also keeps the line under the menu's title saying how your cat is doing, with "(held)" on a held time and
-"(kept at N+)" on a pile kept up. On a wcmods that keeps a line for each script (`Menu.statusShown`), the menu
-chooses whose line to show; on an older one, while another script's line is up there, it leaves that one alone.
+It also keeps the line under the menu's title saying how your cat is doing, with "(held)" on a time it holds
+(and "(held by Tweaks)" on another script's, on a wcmods with the shared hold) and "(kept at N+)" on a pile kept
+up. On a wcmods that keeps a line for each script (`Menu.statusShown`), the menu chooses whose line to show; on an
+older one, while another script's line is up there, it leaves that one alone.
 
 ## Getting it
 

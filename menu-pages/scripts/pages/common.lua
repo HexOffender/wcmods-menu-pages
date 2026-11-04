@@ -76,18 +76,53 @@ end
 function P.refresh() snap.at = -1 end
 
 -- Held values: the World page can hold the time of day and keep the fresh-kill pile up, even with the
--- menu closed (its timer is in world.lua). They're here so every page's time buttons move the held time
--- too, and so the status line and At a glance can say they're on.
+-- menu closed (the pile's timer is in world.lua). They're here so every page's time buttons move the held
+-- time too, and so the status line and At a glance can say they're on.
 P.hold = { time = false, timeAt = 12 * 3600, pile = false, pileAt = 100 }
-function P.setTime(h, m)
-    Game.time.set(h, m or 0)
-    P.hold.timeAt = h * 3600 + (m or 0) * 60
+-- The clock is held through wcmods' shared hold where there is one (Game.time.hold, wcmods #112 on): one hold for
+-- every script, the last to hold it has it, and the rest give way, so Hold this time and another script's hold
+-- (Tweaks' Hold the clock, a mod being tested) don't fight over the hour. An older wcmods has none: World's own
+-- timer puts the clock back each second (P.hold.time, P.hold.timeAt).
+P.HOLDER = "Menu pages"
+P.sharedHold = Game.time.hold ~= nil and Game.time.held ~= nil
+-- The hour held, in seconds, and whose hold it is (nil for none): any script's with the shared hold, else this
+-- mod's own.
+function P.timeHeld()
+    if P.sharedHold then return Game.time.held() end
+    if P.hold.time then return P.hold.timeAt, P.HOLDER end
+    return nil
+end
+function P.holdingTime() return select(2, P.timeHeld()) == P.HOLDER end
+-- Hold the clock at secs, taking the hold over from another script's; nil lets go of this mod's.
+function P.holdTime(secs)
+    if P.sharedHold then
+        Game.time.hold(secs, P.HOLDER)
+    else
+        P.hold.time = secs ~= nil
+        if secs then
+            P.hold.timeAt = secs
+            Game.time.setSeconds(secs)
+        end
+    end
     P.refresh()
 end
--- "07:00", "07:00 (held)"; "80, Abundant", "80, Abundant (kept at 70+)".
+-- Set the clock. A hold of this mod's moves with it; another script's puts it back.
+function P.setSeconds(secs)
+    if P.holdingTime() then
+        P.holdTime(secs)
+    else
+        Game.time.setSeconds(secs)
+        P.hold.timeAt = secs
+    end
+    P.refresh()
+end
+function P.setTime(h, m) P.setSeconds(h * 3600 + (m or 0) * 60) end
+-- "07:00", "07:00 (held)", "07:00 (held by Tweaks)"; "80, Abundant", "80, Abundant (kept at 70+)".
 function P.timeText(s)
     if not s.h then return nil end
-    return string.format("%02d:%02d", s.h, s.m or 0) .. (P.hold.time and " (held)" or "")
+    local _, by = P.timeHeld()
+    return string.format("%02d:%02d", s.h, s.m or 0) ..
+           (by == P.HOLDER and " (held)" or by and (" (held by " .. tostring(by) .. ")") or "")
 end
 function P.pileText(s)
     if not s.fk then return nil end
