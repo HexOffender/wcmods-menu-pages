@@ -15,7 +15,8 @@ with) comes with wcmods. This mod adds the pages about the game, the same way an
 | Cheats | **Cheats** (the engine's cheat manager: god mode, fly, ghost, cat size, game speed, teleport, engine commands), **Game switches** (the developers' own, with the game's own god mode as its four flags) |
 
 It also keeps the line under the menu's title saying how your cat is doing, with "(held)" on a held time and
-"(kept at N+)" on a pile kept up. While another script's line is up there, it leaves that one alone.
+"(kept at N+)" on a pile kept up. On a wcmods that keeps a line for each script (`Menu.statusShown`), the menu
+chooses whose line to show; on an older one, while another script's line is up there, it leaves that one alone.
 
 ## Getting it
 

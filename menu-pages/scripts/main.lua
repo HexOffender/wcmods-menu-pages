@@ -28,14 +28,28 @@ for _, group in ipairs({ "cat", "world", "story", "fight", "cheats" }) do
 end
 
 -- The status line: while the menu is open, twice a second. An older wcmods without Menu.status has the
--- menu's own line instead. The menu shows one script's line at a time (the last one set), so this one
--- steps aside while another script's line is up, and comes back once that's cleared; it would otherwise
--- write over it within a second, as its own line changes with the clock.
+-- menu's own line instead. A wcmods with Menu.statusShown keeps a line for each script and chooses whose to
+-- show (this mod's on its own pages), so this just keeps its line up to date. Before that (0.5.0) the menu
+-- showed one script's line, the last one set: this one steps aside while another script's line is up, and
+-- comes back once that's cleared; it would otherwise write over it within a second, as its own line changes
+-- with the clock.
 if Menu.status then
     -- A line already up when this starts is taken for this mod's own: after a UE4SS hot reload it is (shared
     -- variables outlive the reload), and other scripts set theirs later, from timers.
     local shown = Menu.shared and Menu.shared("status") or nil
     Game.every(0.5, function()
+        if Menu.statusShown then
+            -- Not cleared when the menu closes: put up again, it would be the newest line, ahead of other
+            -- scripts' lines on their pages.
+            if Menu.isOpen() then
+                local line = P.statusLine()
+                if line ~= shown then
+                    shown = line
+                    Menu.status(line)
+                end
+            end
+            return
+        end
         local up = Menu.shared and Menu.shared("status")   -- the line the menu has now (nil: can't tell)
         if up ~= nil and up ~= "" and up ~= shown then return end
         local line = Menu.isOpen() and P.statusLine() or ""
