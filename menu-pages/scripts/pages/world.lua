@@ -3,18 +3,31 @@ return function(P)
     local Menu, now, refresh, changed, valid = P.Menu, P.now, P.refresh, P.changed, P.valid
 
     -- Held values: the World page can hold the time of day and keep the fresh-kill pile up, even with the
-    -- menu closed (P.hold, which the status line shows). Going back to the main menu lets go of them, so a
-    -- save loaded next doesn't start held.
+    -- menu closed (P.hold, and the clock's hold in common.lua, which the status line shows). Going back to the
+    -- main menu lets go of them, so a save loaded next doesn't start held.
     local hold = P.hold
+    if P.sharedHold then
+        -- The shared hold is kept up by the Lua state that holds it: after a UE4SS hot reload, the old state has
+        -- gone, and its hold would be no hold 3 s after its last word. A hold of this mod's from before the reload
+        -- is taken up again at the first frame (counted from when this state loaded: 3 s from the hold's last word,
+        -- which may be up to 0.5 s before the old state went, so a reload of up to about 2.5 s keeps it).
+        Game.after(0, function()
+            local at, by = Game.time.held()
+            if at and by == P.HOLDER then Game.time.hold(at, P.HOLDER) end
+        end)
+    end
     Game.every(1, function()
-        if hold.time then Game.time.setSeconds(hold.timeAt) end
+        if not P.sharedHold and hold.time then Game.time.setSeconds(hold.timeAt) end
         if hold.pile then
             local v = Game.freshKill.value()
             if v and v < hold.pileAt then Game.freshKill.set(hold.pileAt) end
         end
     end)
     Game.on("level", function(level)
-        if tostring(level or ""):find("MainMenu", 1, true) then hold.time, hold.pile = false, false end
+        if tostring(level or ""):find("MainMenu", 1, true) then
+            if P.holdingTime() then P.holdTime(nil) end
+            hold.time, hold.pile = false, false
+        end
     end)
 
     Menu.page("World", function(ui)
@@ -28,19 +41,23 @@ return function(P)
                      { "Time", P.timeText(s) or "?" }, { "Level", Game.levelName() or "?" } })
         ui.section("Time of day", function()
             local hours = ui.slider("Clock", s.secs / 3600, 0, 23.99, { step = 0.25, format = "%.2f h" })
-            if math.abs(hours - s.secs / 3600) > 0.2 then
-                Game.time.setSeconds(hours * 3600)
-                hold.timeAt = hours * 3600
-                refresh()
-            end
+            if math.abs(hours - s.secs / 3600) > 0.2 then P.setSeconds(hours * 3600) end
             local hit = ui.buttons({ "Dawn 6:00", "Noon", "Dusk 19:00", "Night 23:00" })
             local at = ({ 6, 12, 19, 23 })[hit or 0]
             if at then P.setTime(at, 0) end
-            local holding = ui.switch("Hold this time", hold.time)
-            if holding and not hold.time then hold.timeAt = s.secs end
-            hold.time = holding
+            local heldAt, heldBy = P.timeHeld()
+            local mine = heldBy == P.HOLDER
+            local holding = ui.switch("Hold this time", mine)
+            if holding ~= mine then P.holdTime(holding and s.secs or nil) end
+            if heldAt and not mine then
+                ui.note(string.format("Held by %s at %02d:%02d: the clock goes back to that, so Clock and the buttons " ..
+                                      "above are put back. Hold this time takes the hold over.", tostring(heldBy),
+                                      math.floor(heldAt / 3600), math.floor(heldAt % 3600 / 60)))
+            end
             ui.note("A game day passes in about 20 minutes (DayNight.ClockSpeed 72). Going back to the main menu lets go " ..
-                    "of a held time or pile.")
+                    "of a held time or pile." .. (P.sharedHold and (" Hold this time holds the clock through wcmods' one " ..
+                    "hold for every script (Game.time.hold): the last to hold it has it, and Tweaks' Hold the clock gives " ..
+                    "way to it.") or ""))
         end, { id = "world-time", open = true })
         ui.section("Fresh-kill pile", function()
             if not s.fk then
