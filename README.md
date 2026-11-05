@@ -68,12 +68,14 @@ It uses only what any mod can: `WCModsMenu` (`Menu.page`, `Menu.status`), `WCMod
 `WCModsDraw` and `WCModsNames` (the game's names for items, areas and quests), documented in wcmods'
 [docs/SDK.md](https://github.com/HexOffender/warrior-cats-mods/blob/main/docs/SDK.md#wcmodsmenu) and
 [docs/scripting.md](https://github.com/HexOffender/warrior-cats-mods/blob/main/docs/scripting.md). So it's also an
-example of a bigger script mod. Two things it does are for older versions of wcmods. On a wcmods without
+example of a bigger script mod. Three things it does are for older versions of wcmods. On a wcmods without
 `Menu.statusShown` (0.5.0 and older), the status line reads `Menu.shared("status")`, the one line the menu
 showed then, so it can leave another script's line alone; wcmods' SDK.md now says the menu's shared variables
-aren't for scripts, and a newer wcmods keeps a line for each script itself. And the Fight page reads whose turn
-it is from the fight's `director` (in scripting.md's Fights), not `Fight:current()`, which gave your own cat
-when it was nobody's turn before wcmods' fixes for these pages.
+aren't for scripts, and a newer wcmods keeps a line for each script itself. On one without `Game.time.hold` (0.5.0
+and older too), World's Hold this time puts the clock back itself each second, so it and Tweaks' Hold the clock
+fight over the hour when both are on; a newer wcmods has one hold of the clock that every script goes through. And
+the Fight page reads whose turn it is from the fight's `director` (in scripting.md's Fights), not `Fight:current()`,
+which gave your own cat when it was nobody's turn before wcmods' fixes for these pages.
 
 To try a change: copy `menu-pages/` into your mods folder (or `python wcmods.py add path\to\menu-pages`),
 then install. wcmods' agent test for the menu drives these pages in the running game: install with

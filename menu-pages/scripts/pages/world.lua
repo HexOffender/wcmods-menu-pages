@@ -9,8 +9,8 @@ return function(P)
     if P.sharedHold then
         -- The shared hold is kept up by the Lua state that holds it: after a UE4SS hot reload, the old state has
         -- gone, and its hold would be no hold 3 s after its last word. A hold of this mod's from before the reload
-        -- is taken up again at the first frame (counted from when this state loaded, so a reload of up to about
-        -- 3 s keeps it).
+        -- is taken up again at the first frame (counted from when this state loaded: 3 s from the hold's last word,
+        -- which may be up to 0.5 s before the old state went, so a reload of up to about 2.5 s keeps it).
         Game.after(0, function()
             local at, by = Game.time.held()
             if at and by == P.HOLDER then Game.time.hold(at, P.HOLDER) end
