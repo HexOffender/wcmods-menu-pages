@@ -2,15 +2,20 @@
 -- WCModsMenu, which any script adds pages with) comes with wcmods; this mod adds pages to it like any
 -- other mod does:
 --
---   Home       At a glance: your cat, where it is, the time and the fresh-kill pile, and a few buttons
---   Your cat   Stats: health, stamina, level, stats, size
---   World      World (the time of day, the fresh-kill pile), Travel, Nearby, Items
---   Story      Quests: the one you follow, its objectives, every quest's state
---   Fight      both sides of a fight while you're in one
---   Cheats     the engine's cheats, and the game's own developer switches
+--   Home       At a glance: your cat, where it is, the time and the fresh-kill pile, and a few buttons;
+--              SDK map: every part of the SDK, whether this game has it, and its page
+--   Your cat   Stats, Looks, Movement, Animations
+--   World      World (the time of day, the fresh-kill pile), Travel, Nearby, Items, Animals, Walking cats,
+--              Your own cats, Dens, Sky and sound, Camera, HUD and map
+--   Story      Quests, Scenes, Talk, Bonds
+--   Fight      both sides of a fight while you're in one, your cat's turns, and starting one
+--   Cheats     the engine's cheats, the game's own developer switches, and its tuning
+--   Tools      Engine, Tables, Words, Events, Save data, Game UI
 --
+-- Together they reach everything WCModsGame and the modules beside it can do, and with the mod's C++ part
+-- (cpp/, WCModsCpp.menuPages) what only wcmods' C++ SDK can. A page whose part isn't in this wcmods says so.
 -- It also keeps the line under the menu's title up to date with how your cat is doing (Menu.status).
--- Each group's pages are in pages/<group>.lua; pages/common.lua has what they share.
+-- The pages are in pages/<file>.lua; pages/common.lua has what they share.
 local okMenu, Menu = pcall(require, "WCModsMenu")
 if not okMenu then
     MOD.log("WCModsMenu didn't load, so there's no menu to add pages to: %s", tostring(Menu))
@@ -22,7 +27,7 @@ if not Game then
 end
 
 local P = require("pages.common")
-for _, group in ipairs({ "cat", "world", "story", "fight", "cheats" }) do
+for _, group in ipairs({ "cat", "body", "world", "creatures", "places", "story", "fight", "cheats", "tools" }) do
     local ok, err = pcall(function() require("pages." .. group)(P) end)
     if not ok then MOD.log("the %s pages didn't load: %s", group, tostring(err)) end
 end

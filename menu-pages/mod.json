@@ -1,6 +1,6 @@
 {
   "name": "Menu pages",
-  "description": "Pages for the in-game mod menu (Insert): your cat's stats, the world and its time, travel, items, quests, fights and cheats. Needs UE4SS, and mods that run code allowed.",
+  "description": "Pages for the in-game mod menu (Insert) that reach everything wcmods' SDK can: your cat, its looks and movement, the world, travel, items, animals and cats and their AI, dens, the sky and sound, the camera and HUD, quests, scenes, talks, bonds, fights, cheats and tuning, and the engine, tables, words, events and save; its SDK map says where each is. Needs UE4SS, and mods that run code allowed.",
   "version": "1.0",
   "author": "wcmods",
   "uses": [

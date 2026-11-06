@@ -1,2 +1,6 @@
 dist/
 __pycache__/
+# The C++ part's build (python wcmods.py cpp build): tools/pack.py puts it in the release zip.
+menu-pages/dlls/
+menu-pages/cpp/out/
+menu-pages/cpp/build/
