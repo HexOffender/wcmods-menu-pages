@@ -5,19 +5,24 @@ return function(P)
     local Menu, show, words = P.Menu, P.show, P.words
 
     -- ---------- Dens ----------
-    local dens = { clan = "All", decoration = nil, seconds = 30 }
+    -- The den picked is kept by its door's address and its rank: a clan's rank dens share one door.
+    local dens = { clan = "All", decoration = nil, seconds = 30, pick = nil }
+    local function denKey(d) return d and P.addr(d.door) and (tostring(P.addr(d.door)) .. "/" .. tostring(d.rank)) or nil end
     Menu.page("Dens", function(ui)
         ui.heading("Dens")
         if not P.needs(ui, "dens") then return end
         if not Game.cat() then ui.text("Not in the world yet.") return end
         dens.clan = ui.radio("Clan", dens.clan, { "All", "ThunderClan", "ShadowClan", "RiverClan", "WindClan" })
         local list = P.cached("dens." .. dens.clan, 2, function() return Game.dens.list(dens.clan ~= "All" and dens.clan or nil) end) or {}
-        local chosen = P.picked("dens", list, function(d) return d.door end)
+        local chosen = nil
+        for _, d in ipairs(dens.pick and list or {}) do
+            if denKey(d) == dens.pick then chosen = d break end
+        end
         P.said(ui, "dens")
         P.pager(ui, "dens-list", list, function(d)
             local label = string.format("%s %s den", show(d.clan), d.rank ~= "" and words(d.rank) or "shared")
             local hit = ui.buttons({ (d == chosen and "> " or "") .. label, "Go inside" }, { kinds = { d == chosen and "primary" or nil } })
-            if hit == 1 then P.pick("dens", d.door) chosen = d
+            if hit == 1 then dens.pick, chosen = denKey(d), d
             elseif hit == 2 then P.result("dens", "Inside the " .. label .. ".", Game.dens.enter(d)) end
         end, { size = 10 })
         local decos = P.cached("dens.decorations", 30, Game.dens.decorations) or {}
@@ -38,7 +43,9 @@ return function(P)
                     ui.note("Building a decoration is the C++ part's (the game's own cost row goes through a native lookup). " ..
                             (canCpp and "" or P.CPP_HELP))
                 end
-                for i, h in ipairs(Game.dens.hotspots(chosen) or {}) do
+                -- (Read every 2 s: Game.dens.hotspots looks through every door and hotspot and the decorations' table.)
+                local spotsKey = "dens.hotspots." .. tostring(dens.pick)
+                for i, h in ipairs(P.cached(spotsKey, 2, function() return Game.dens.hotspots(chosen) end) or {}) do
                     ui.field(string.format("Hotspot %d (%s, %s)", i, show(h.size), words(show(h.rank))),
                              string.format("%s now; saved: %s %s", show(h.decoration), show(h.savedStatus), show(h.savedDecoration)))
                     local labels = { "Take it off" }
@@ -52,6 +59,7 @@ return function(P)
                         P.result("dens", string.format("Building %s: it shows in %d s.", tostring(deco.name), dens.seconds),
                                  P.callCpp("build_decoration", P.addr(h.actor), deco.tag, math.floor(dens.seconds)))
                     end
+                    if hit then P.forget(spotsKey) end
                 end
             end, { id = "dens-hotspots", open = true })
         end

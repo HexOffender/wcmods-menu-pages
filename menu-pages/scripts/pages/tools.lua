@@ -46,7 +46,7 @@ return function(P)
             { "The save", "Game.save, Game.progression, Game.mood", { "save" }, nil, "Save data" },
             { "The game's own UI", "WCModsCpp.ui, WCModsDraw, WCModsMenu", nil, nil, "Game UI" },
             { "Any object's members", "Game.properties, Game.functions (wcmods' own Inspector page)", nil, nil, "Inspector" },
-            { "Lua, live", "the game bridge (wcmods' own Lua (advanced) page)", nil, nil, "Lua console" } } },
+            { "Lua, live", "the game bridge (wcmods' own Lua (advanced) page)", nil, nil, "Lua (advanced)" } } },
     }
     local share = { name = "", value = "", read = "" }
     Menu.page("SDK map", function(ui)
@@ -232,8 +232,9 @@ return function(P)
         if not t then tbl.name = nil return end
         if ui.button("Back to every table") then tbl.name, tbl.row = nil, nil return end
         ui.field("Table", tbl.name)
-        local rows = Game.tables.rowNames(t) or {}
         if not tbl.row then
+            -- (Read every 5 s, and again after a row is added or taken out: a big table has thousands.)
+            local rows = P.cached("tables.rows." .. tbl.name, 5, function() return Game.tables.rowNames(t) end) or {}
             P.pager(ui, "tables-rows-" .. tbl.name, rows, function(r)
                 if ui.button(tostring(r)) then tbl.row, tbl.confirm, tbl.edit = r, false, {} end
             end, { text = function(r) return r end, label = "Find a row" })
@@ -254,9 +255,11 @@ return function(P)
                 local nv = ui.number(f.name, v, { step = P.INTEGER[f.type] and 1 or 0.1, whole = P.INTEGER[f.type] == true })
                 if P.changed(nv, v) then P.result("tables", f.name .. " set.", Game.tables.set(t, tbl.row, f.name, P.asType(nv, f.type))) end
             elseif f.type == "StrProperty" or f.type == "NameProperty" then
+                -- The box is handed the edit so far (it gives back what it's handed unless the player typed this frame).
                 local s = show(v)
-                local ns = ui.input(f.name, s)
-                if ns ~= s then tbl.edit[f.name] = ns end
+                local shown = tbl.edit[f.name] or s
+                local ns = ui.input(f.name, shown)
+                if ns ~= shown then tbl.edit[f.name] = ns ~= s and ns or nil end
             else
                 ui.field(f.name .. "  (" .. words(tostring(f.type):gsub("Property$", "")) .. ")", show(v))
             end
@@ -270,13 +273,17 @@ return function(P)
                 tbl.newRow = ui.input("A new row's name", tbl.newRow)
                 if ui.button("Add it, a copy of this row") and tbl.newRow ~= "" then
                     P.result("tables", "Added " .. tbl.newRow .. ".", P.callCpp("add_row", tbl.name, tbl.newRow, tbl.row))
+                    P.forget("tables.rows." .. tbl.name)
                 end
             else
                 ui.note("Adding a row is the C++ part's (UE4SS's AddRow can't on this engine). " .. P.CPP_HELP)
             end
             tbl.confirm = ui.toggle("I know it's gone until the game restarts", tbl.confirm)
             if tbl.confirm and ui.button("Take this row out", { kind = "danger" }) then
-                if P.result("tables", tbl.row .. " is out.", Game.tables.removeRow(t, tbl.row)) then tbl.row = nil end
+                if P.result("tables", tbl.row .. " is out.", Game.tables.removeRow(t, tbl.row)) then
+                    tbl.row = nil
+                    P.forget("tables.rows." .. tbl.name)
+                end
             end
         end, { id = "tables-rows", open = false })
     end, { order = 71, group = "tools" })
@@ -322,14 +329,24 @@ return function(P)
         table.insert(events.log, 1, { at = os.date("%H:%M:%S"), name = name, text = table.concat(parts, ", ") })
         while #events.log > 200 do table.remove(events.log) end
     end
-    for _, name in ipairs({ "level", "player", "phase", "combatStart", "combatEnd", "itemPickedUp", "questStatus", "genericEvent",
-                            "damage", "turnEnded", "status" }) do
-        Game.on(name, function(...) logEvent(name, ...) end)
+    -- Listened to from the first time the page is drawn, not as the mod loads: the first listener of an event starts
+    -- its source, and five of them hook the game's own functions (the generic events, quests, damage, turns, status),
+    -- which a player who never opens this page shouldn't pay for.
+    local function listen()
+        events.subscribed = true
+        for _, name in ipairs({ "level", "player", "phase", "combatStart", "combatEnd", "itemPickedUp", "questStatus", "genericEvent",
+                                "damage", "turnEnded", "status" }) do
+            if not events.listening[name] then
+                events.listening[name] = true
+                Game.on(name, function(...) logEvent(name, ...) end)
+            end
+        end
     end
     Menu.page("Events", function(ui)
         ui.heading("Timers, keys, events and hooks")
-        ui.note("Every WCModsGame event as it happens (Game.on): level, player, phase, combatStart and combatEnd, itemPickedUp, " ..
-                "questStatus, genericEvent, damage, turnEnded and status.")
+        if not events.subscribed then listen() end
+        ui.note("Every WCModsGame event as it happens (Game.on), from the first time this page opened: level, player, phase, " ..
+                "combatStart and combatEnd, itemPickedUp, questStatus, genericEvent, damage, turnEnded and status.")
         events.paused = ui.switch("Pause the log", events.paused)
         if ui.button("Clear it") then events.log = {} end
         P.pager(ui, "events-log", events.log, function(e)
@@ -414,14 +431,21 @@ return function(P)
     end, { order = 73, group = "tools" })
 
     -- ---------- Save data ----------
-    local save = { root = "Your cat's slot", path = "", progression = "FreshKill/Cycle", primary = "", sub = "", setValue = 0,
+    -- The browser's path is kept as the keys themselves, so a key that's a number written as text (the save's slots,
+    -- "0" to "9") or has a dot in it is opened as it is.
+    local save = { root = "Your cat's slot", path = {}, progression = "FreshKill/Cycle", primary = "", sub = "", setValue = 0,
                    moodPrimary = "", moodSub = "", stateKey = "Currency" }
     local function walk(t, path)
-        for part in path:gmatch("[^%.]+") do
+        for _, k in ipairs(path) do
             if type(t) ~= "table" then return nil end
-            t = t[tonumber(part) or part]
+            t = t[k]
         end
         return t
+    end
+    local function pathText(path)
+        local parts = {}
+        for i, k in ipairs(path) do parts[i] = tostring(k) end
+        return table.concat(parts, ".")
     end
     Menu.page("Save data", function(ui)
         ui.heading("The save")
@@ -431,11 +455,12 @@ return function(P)
                      { "Scripts' folder", show(Game.save.folder and Game.save.folder()) } })
         if ui.button("Save now (the game's own save)", { kind = "primary" }) then P.result("save", "Saved.", Game.save.write()) end
         ui.section("Browse the save", function()
-            save.root = ui.radio("From", save.root, { "Your cat's slot", "The whole save" })
+            local from = ui.radio("From", save.root, { "Your cat's slot", "The whole save" })
+            if from ~= save.root then save.root, save.path = from, {} end
             local root = save.root == "The whole save" and Game.save.file() or Game.save.slotData()
             if type(root) ~= "table" then ui.note("No save read yet.") return end
-            ui.field("Path", save.path ~= "" and save.path or "(the top)")
-            if save.path ~= "" and ui.button("Up") then save.path = save.path:match("^(.*)%.[^%.]+$") or "" end
+            ui.field("Path", #save.path > 0 and pathText(save.path) or "(the top)")
+            if #save.path > 0 and ui.button("Up") then table.remove(save.path) end
             local here = walk(root, save.path)
             local keys = {}
             if type(here) == "table" then
@@ -447,7 +472,7 @@ return function(P)
                 if type(v) == "table" then
                     local n = 0
                     for _ in pairs(v) do n = n + 1 end
-                    if ui.button(string.format("%s  (%d)", tostring(k), n)) then save.path = (save.path ~= "" and (save.path .. ".") or "") .. tostring(k) end
+                    if ui.button(string.format("%s  (%d)", tostring(k), n)) then save.path[#save.path + 1] = k end
                 else
                     ui.field(tostring(k), show(v))
                 end

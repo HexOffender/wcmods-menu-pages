@@ -226,16 +226,33 @@ function P.callCpp(name, ...)
 end
 
 -- What a call costs to ask every frame is asked at most every `seconds`: P.cached("animals", 0.5, fn).
-local caches = {}
+-- Keys can be made from what the player types (Words' prefix, a talk table's rows), so once there are more than
+-- `limit`, the ones past their time are dropped: they'd be asked again anyway.
+local caches, ncaches, limit = {}, 0, 200
+local function prune(now)
+    local n = 0
+    for k, c in pairs(caches) do
+        if now - c.at >= c.seconds then caches[k] = nil else n = n + 1 end
+    end
+    ncaches, limit = n, math.max(200, n * 2)   -- (so a cache full of fresh keys isn't looked through for each new one)
+end
 function P.cached(key, seconds, fn)
     local c = caches[key]
     if c and os.clock() - c.at < seconds then return c.value end
     local ok, v = pcall(fn)
-    caches[key] = { at = os.clock(), value = ok and v or nil }
+    local new = caches[key] == nil
+    c = { at = os.clock(), seconds = seconds, value = ok and v or nil }
+    caches[key] = c
+    if new then
+        ncaches = ncaches + 1
+        if ncaches > limit then prune(os.clock()) end
+    end
     if not ok then P.logOnce(key, v) end
-    return caches[key].value
+    return c.value
 end
-function P.forget(key) caches[key] = nil end
+function P.forget(key)
+    if caches[key] ~= nil then caches[key], ncaches = nil, ncaches - 1 end
+end
 
 -- An error said once in UE4SS.log (a page draws every frame, so the same error would fill it).
 local said, nsaid = {}, 0

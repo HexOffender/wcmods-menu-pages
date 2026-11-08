@@ -822,6 +822,14 @@ namespace menu_pages
             return 1;
         }
 
+        // Whether the player is on. It outlives a mods reload (this DLL stays loaded; the pages' Lua starts again), so the
+        // Fight page asks rather than remembering. (The SDK has no call for it: its own state, as auto_fight keeps it.)
+        auto f_auto_fight_on(lua_State* L) -> int
+        {
+            lua_pushboolean(L, wcmods::detail::auto_fight_state().on);
+            return 1;
+        }
+
         // ======================================================================================== bonds
         auto push_bond(lua_State* L, const wcmods::Bond& b) -> void
         {
@@ -1352,6 +1360,7 @@ namespace menu_pages
             {"restore_moves", guard<f_restore_moves>},
             {"auto_fight", guard<f_auto_fight>},
             {"auto_fight_turns", guard<f_auto_fight_turns, false>},
+            {"auto_fight_on", guard<f_auto_fight_on, false>},
             {"bonds", guard<f_bonds>},
             {"bond", guard<f_bond>},
             {"set_bond", guard<f_set_bond>},

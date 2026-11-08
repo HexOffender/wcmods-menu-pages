@@ -193,11 +193,18 @@ return function(P)
         if not Game.cat() then ui.text("Not in the world yet.") return end
         ui.note("The clan cats walking about (the game's and mods' own) and their paths (Game.walkers), and their AI (Game.ai).")
         walk.radius = ui.slider("Within", walk.radius, 1000, 30000, { step = 1000, format = "%.0f cm" })
-        local list = P.cached("walkers." .. walk.radius, 0.5, function() return Game.walkers.near(walk.radius) end) or {}
+        -- (Their names are read with the list, twice a second, not each frame.)
+        local list = P.cached("walkers." .. walk.radius, 0.5, function()
+            local out = Game.walkers.near(walk.radius) or {}
+            for _, w in ipairs(out) do
+                local c = Game.valid(w.actor) and Game.cat(w.actor)
+                w.name = c and c:name() or nil
+            end
+            return out
+        end) or {}
         local labels, chosen, now = { "(none)" }, P.picked("walkers", list), "(none)"
         for i, w in ipairs(list) do
-            local c = Game.valid(w.actor) and Game.cat(w.actor)
-            labels[#labels + 1] = string.format("%d. %s", i, c and c:name() or "a clan cat")
+            labels[#labels + 1] = string.format("%d. %s", i, w.name or "a clan cat")
             if w == chosen then now = labels[#labels] end
         end
         local want = ui.choice("Pick one", now, labels)
@@ -220,8 +227,10 @@ return function(P)
             elseif hit == 3 then
                 P.result("walkers", "It walks a square round where you stand.", Game.walkers.walkPath(a, square(400), { loop = true, speed = 100 }))
             elseif hit == 4 then
-                local l, h = Game.cat(a) and Game.cat(a):location(), P.here()
-                P.result("walkers", "It walks to you and back.", l and h and Game.walkers.walkPath(a, { l, h }, { loop = false }))
+                local c, h = Game.cat(a), P.here()
+                local l = c and c:location()
+                if l and h then P.result("walkers", "It walks to you and back.", Game.walkers.walkPath(a, { l, h }, { loop = false }))
+                else P.say("walkers", "Couldn't: " .. (h and "where it stands can't be read" or "your cat isn't in the world")) end
             end
             if hit then P.forget("walkers." .. walk.radius) end
             aiState(ui, a)
@@ -250,6 +259,9 @@ return function(P)
     local ICONS = { "talk", "search", "barter", "freshkill", "trainer", "den", "outpost", "skirmish", "madcat",
                     "ThunderClan", "ShadowClan", "RiverClan", "WindClan" }
     local talking = nil   -- the cat whose line is in the dialogue box
+    -- The cat picked, by its Game.npcs object, not its actor: a cat just made has no actor yet, and its actor changes
+    -- when its level loads again.
+    local pickedNpc = nil
     if P.has("npcs", "onInteract") then
         Game.npcs.onInteract(function(who)
             if who == nil then
@@ -290,7 +302,7 @@ return function(P)
                     if made.name ~= "" then npc:label({ name = made.name, title = made.title }) end
                     if made.line ~= "" then npc:prompt("Talk") end
                     npc:face()
-                    P.pick("npcs", npc:actorOrNil())
+                    pickedNpc = npc
                 end
                 P.result("npcs", "It's by your cat. Its look past the colours is made up each time it's spawned.", npc ~= nil, why)
             end
@@ -299,13 +311,14 @@ return function(P)
         local labels, chosen, now = { "(none)" }, nil, "(none)"
         for i, n in ipairs(cats) do
             labels[#labels + 1] = string.format("%d. %s", i, per[n] and per[n].name ~= "" and per[n].name or "a cat")
-            if n:actorOrNil() and P.addr(n:actorOrNil()) == P.pickedId("npcs") then chosen, now = n, labels[#labels] end
+            if n == pickedNpc then chosen, now = n, labels[#labels] end
         end
+        if not chosen then pickedNpc = nil end   -- (taken away)
         local want = ui.choice("Pick one", now, labels)
         if want ~= now then
             local i = tonumber(want:match("^(%d+)%."))
             chosen = i and cats[i] or nil
-            P.pick("npcs", chosen and chosen:actorOrNil())
+            pickedNpc = chosen
         end
         P.said(ui, "npcs")
         if not chosen then return end
@@ -324,7 +337,7 @@ return function(P)
             local at = P.spot()
             if at then P.result("npcs", "Moved by you.", chosen:moveTo(at.X, at.Y, at.Z)) end
         elseif hit == 5 then P.result("npcs", "Walking round you.", Game.walkers.walkPath(chosen, square(400), { loop = true, speed = 100 }))
-        elseif hit == 6 then chosen:remove() P.pick("npcs", nil) P.say("npcs", "Taken away.") return end
+        elseif hit == 6 then chosen:remove() pickedNpc = nil P.say("npcs", "Taken away.") return end
         local a = chosen:actorOrNil()
         if a and P.has("ai", "follow") then
             local following = Game.ai.following(a)

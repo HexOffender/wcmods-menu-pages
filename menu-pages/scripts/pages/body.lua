@@ -248,7 +248,8 @@ return function(P)
 
     -- ---------- Animations ----------
     local anim = { loop = false, speed = 1, blend = 0.25, path = "", tag = "Animation.Exploration.Meow", table = nil, rate = 1 }
-    local TAGS = { "Animation.Exploration.Meow", "Animation.Interaction.Dig", "Animation.Interaction.Sniff", "Animation.Combat.Hit.1" }
+    local TAGS = { "Animation.Exploration.Meow", "Animation.Exploration.Interaction.Dig", "Animation.Exploration.Interaction.Sniff",
+                   "Animation.Combat.Hit.1" }
     Menu.page("Animations", function(ui)
         ui.heading("Animations")
         if not P.needs(ui, "anims") then return end
@@ -294,10 +295,21 @@ return function(P)
             end) or {}
             if #tables > 0 then
                 anim.table = ui.choice("The fight animations of", anim.table or tables[1], tables)
-                local rows = P.cached("anims.rows." .. anim.table, 30, function() return Game.tables.rowNames(anim.table) end) or {}
-                P.pager(ui, "anims-rows", rows, function(name)
-                    if ui.button("Play " .. name) and c then P.result("anims", "Playing " .. name .. ".", c:playMontage(name, anim.rate) ~= nil) end
-                end, { text = function(n) return n end, size = 10 })
+                -- The game plays a row by its tag (its GameplayTag field), not by the row's name.
+                local rows = P.cached("anims.rows." .. anim.table, 30, function()
+                    local out = {}
+                    for _, r in ipairs(Game.tables.rows(anim.table)) do
+                        local okT, tag = pcall(Game.tagName, Game.get(r.row, "GameplayTag"))
+                        out[#out + 1] = { name = r.name, tag = okT and tag ~= "" and tag ~= "None" and tag or nil }
+                    end
+                    return out
+                end) or {}
+                P.pager(ui, "anims-rows", rows, function(r)
+                    if ui.button(string.format("Play %s  (%s)", r.name, r.tag or "no tag")) and c then
+                        if r.tag then P.result("anims", "Playing " .. r.tag .. ".", c:playMontage(r.tag, anim.rate) ~= nil)
+                        else P.say("anims", "Couldn't: " .. r.name .. " has no tag to play it by.") end
+                    end
+                end, { text = function(r) return r.name .. " " .. tostring(r.tag) end, size = 10 })
             end
         end, { id = "anims-game", open = false })
         ui.section("One of the game's sequences, by path", function()

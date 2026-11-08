@@ -51,7 +51,7 @@ ask these at most a few times a second, never every frame. UE4SS's own object is
 | `ai_tiers()`, `ai_chances(tier)`, `set_ai_chance(tier, column, chance)` | Tier names (Terrible, Tier1 to Tier6, Perfect); `{ [column] = chance }` by `AICombatChances.csv` column name (`SelectRandom`, `AttackWeakest`...) |
 | `fighter_moves(actor)` | A fighter's moves: `{ {tag, fields = { {name, value}, ... }}, ... }` (each AttackMove row described) |
 | `limit_moves(actor, {1, 3})`, `restore_moves(actor)` | Places counted from 1 |
-| `auto_fight(on)`, `auto_fight_turns()` | C++'s own player (picks by damage) |
+| `auto_fight(on)`, `auto_fight_turns()`, `auto_fight_on()` | C++'s own player (picks by damage); whether it's on (it stays on through a mods reload) |
 | **Bonds** | |
 | `bonds()`, `bond(key)`, `set_bond(key, v)`, `add_bond(key, n)` | Each `Bond` as a table; one by key |
 | `bond_thresholds()`, `bond_roles()` | |

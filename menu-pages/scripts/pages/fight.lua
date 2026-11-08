@@ -41,6 +41,13 @@ return function(P)
     -- the first time a multiplier isn't 1 and left on (taking a hook off from inside a fight's call is what crashed
     -- the game once); it hands back the damage as the game had it while both are 1.
     local hits = { enemy = 1, mine = 1, hooked = false }
+    -- Whether the C++ part's player is on: its own answer (it outlives a mods reload, which this page's state
+    -- doesn't), or what this page last set on a C++ part built before it had auto_fight_on.
+    local function cppAutoOn()
+        local on = P.callCpp("auto_fight_on")
+        if type(on) == "boolean" then return on end
+        return hits.cppAuto == true
+    end
     local function hookDamage()
         if hits.hooked or not P.has("combat", "onDamage") then return end
         hits.hooked = Game.combat.onDamage(function(info)
@@ -152,7 +159,7 @@ return function(P)
                     elseif h == 2 then P.result("fight", label .. " has all its moves again.", P.callCpp("restore_moves", key)) end
                 end
             end
-        end, { id = "fight-change-" .. label, open = false })
+        end, { id = "fight-change-" .. tostring(P.addr(x:actor()) or label), open = false })   -- (by fighter: two can share a name)
         ui.space(6)
     end
 
@@ -214,21 +221,34 @@ return function(P)
                         local a = ui.buttons({ show(d.option1), show(d.option2) })
                         if a then P.result("fight", "Answered.", Game.combat.answerDilemma(a)) end
                     end
+                    -- One player at a time: turning one on turns the other off, so they never both act on a turn.
                     local auto = ui.switch("Take every turn for me", hits.auto == true)
                     if auto ~= (hits.auto == true) then
+                        if auto and P.cpp() and cppAutoOn() then
+                            P.callCpp("auto_fight", false)
+                            hits.cppAuto = false
+                        end
                         hits.auto = auto
                         Game.combat.autoFight(auto)
                     end
                     ui.field("Turns taken for you", show(Game.combat.autoFightTurns()))
                     if P.cpp() then
-                        local cppAuto = ui.switch("Take every turn for me, by damage (the C++ part's)", hits.cppAuto == true)
-                        if cppAuto ~= (hits.cppAuto == true) then
-                            hits.cppAuto = cppAuto
-                            P.callCpp("auto_fight", cppAuto)
+                        local cppOn = cppAutoOn()
+                        local cppAuto = ui.switch("Take every turn for me, by damage (the C++ part's)", cppOn)
+                        if cppAuto ~= cppOn then
+                            if cppAuto and hits.auto then
+                                hits.auto = false
+                                Game.combat.autoFight(false)
+                            end
+                            if P.result("fight", cppAuto and "The C++ part takes your cat's turns." or "The C++ part stopped taking turns.",
+                                        P.callCpp("auto_fight", cppAuto)) then
+                                hits.cppAuto = cppAuto
+                            end
                         end
+                        ui.field("Turns the C++ part took", show(P.callCpp("auto_fight_turns")))
                     end
                     ui.note("Lua's own player picks the move costing the most stamina it can use (it can't read a move's damage); " ..
-                            "the C++ part's picks by damage.")
+                            "the C++ part's picks by damage. One plays at a time.")
                 end, { id = "fight-turn", open = true })
             end
             if P.has("combat", "onDamage") then
