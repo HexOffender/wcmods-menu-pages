@@ -1,9 +1,10 @@
--- Fight: both sides of a fight while you're in one.
+-- Fight: both sides of a fight while you're in one, your cat's turns, and starting one (Game.fight, Game.fighter,
+-- Game.combat; the C++ part's fighter moves with their damage, the fight AI's chances and its own auto fight).
 return function(P)
-    local Menu, THEME, words, itemName = P.Menu, P.THEME, P.words, P.itemName
+    local Menu, THEME, words, itemName, show = P.Menu, P.THEME, P.words, P.itemName, P.show
 
-    -- A fighter's cat by its actor, or nil. Not x:cat() or f:current(): Game.cat(nil) is your own cat, so a
-    -- fighter whose body can't be read (or no one's turn) would show as you, and Weaken would hit you.
+    -- A fighter's cat by its actor, or nil. Not x:cat() or f:current(): on wcmods 0.5.0 and older Game.cat(nil) is
+    -- your own cat, so a fighter whose body can't be read (or no one's turn) would show as you, and Weaken would hit you.
     local function catAt(actor) return actor and Game.cat(actor) or nil end
     local function catOf(x) return catAt(x:actor()) end
 
@@ -36,6 +37,42 @@ return function(P)
         extra.items, extra.enemies = {}, {}
     end)
 
+    -- Hits made harder or softer: one hook on the combat director's OnRegisterDamage (Game.combat.onDamage), put on
+    -- the first time a multiplier isn't 1 and left on (taking a hook off from inside a fight's call is what crashed
+    -- the game once); it hands back the damage as the game had it while both are 1.
+    local hits = { enemy = 1, mine = 1, hooked = false }
+    -- Whether the C++ part's player is on: its own answer (it outlives a mods reload, which this page's state
+    -- doesn't), or what this page last set on a C++ part built before it had auto_fight_on.
+    local function cppAutoOn()
+        local on = P.callCpp("auto_fight_on")
+        if type(on) == "boolean" then return on end
+        return hits.cppAuto == true
+    end
+    local function hookDamage()
+        if hits.hooked or not P.has("combat", "onDamage") then return end
+        hits.hooked = Game.combat.onDamage(function(info)
+            if hits.enemy == 1 and hits.mine == 1 then return nil end
+            local x = info.target and Game.fighter(info.target)
+            local team = x and x:team()
+            local f = team == "Enemy" and hits.enemy or hits.mine
+            if f == 1 or type(info.damage) ~= "number" then return nil end
+            return info.damage * f
+        end) ~= nil
+    end
+
+    local STATUS = { "Blinded", "Furious", "Poisoned", "Stressed" }
+    local tiers = nil
+    local function tierNames()
+        if tiers then return tiers end
+        tiers = {}
+        for i = 1, 8 do
+            local n = Game.enums.aiProfile[i]
+            if n then tiers[#tiers + 1] = n end
+        end
+        return tiers
+    end
+    local limits = {}   -- actor address -> the move places the C++ part limited it to, as typed
+
     local function fighterRows(ui, x, enemy)
         local cat = catOf(x)
         if not cat then return end
@@ -54,6 +91,8 @@ return function(P)
                      { "Resilience", st.Resilience }, { "Instinct", st.Instinct }, { "Agility", st.Agility } })
         local move = x:moveTag()
         if move and move ~= "None" and move ~= "" then ui.field("Move", (move:gsub("^Gameplay%.Combat%.Attack%.", ""))) end
+        local condition = cat:status()
+        if condition and condition ~= "None" then ui.field("Condition", string.format("%s, %s rounds", condition, show(cat:statusRounds()))) end
         local hit = ui.buttons({ "Heal", "Weaken", "Cure status" }, { kinds = { "good", "danger" } })
         if hit == 1 then cat:heal()
         elseif hit == 2 then cat:setHealth(1)
@@ -69,32 +108,179 @@ return function(P)
                 end
             end
         end
+        ui.section("Change " .. label, function()
+            local lv = x:level()
+            if type(lv) == "number" then
+                local nl = ui.number(label .. ": level", lv, { min = 1, max = 20, step = 1, whole = true })
+                if nl ~= lv then x:setLevel(nl) end
+            end
+            for _, name in ipairs(Game.statNames) do
+                local v = st[name]
+                if type(v) == "number" then
+                    local nv = ui.number(label .. ": " .. name, v, { step = 1 })
+                    if P.changed(nv, v) then x:setStat(name, nv) end
+                end
+            end
+            if enemy and x.aiTier then
+                local t = x:aiTier() or "None"
+                local nt = ui.choice(label .. ": AI tier", t, tierNames())
+                if nt ~= t then P.result("fight", label .. " plays at " .. nt .. ".", x:setAITier(nt)) end
+            end
+            local give = ui.buttons(STATUS)
+            if give then P.result("fight", label .. " is " .. STATUS[give] .. ".", cat:applyStatus(STATUS[give])) end
+            -- The move it picked (its AttackMove row, a struct), changed before it lands.
+            local m = x:move()
+            local dmg, acc = m ~= nil and Game.get(m, "Damage") or nil, m ~= nil and Game.get(m, "Accuracy") or nil
+            if type(dmg) == "number" and type(acc) == "number" then
+                local d = ui.number(label .. ": its move's damage", dmg, { step = 1 })
+                local a = ui.number(label .. ": its move's accuracy", acc, { step = 0.05 })
+                if P.changed(d, dmg) or P.changed(a, acc) then P.result("fight", "Its move changed.", x:setMove({ Damage = d, Accuracy = a })) end
+            end
+            if P.cpp() then
+                local key = P.addr(x:actor())
+                local moves = P.cached("fight.moves." .. tostring(key), 1, function() return P.callCpp("fighter_moves", key) end) or {}
+                for i, mv in ipairs(moves) do
+                    local f = {}
+                    for _, kv in ipairs(mv.fields or {}) do
+                        local n = tostring(kv.name)
+                        if n == "Damage" or n == "Accuracy" or n:find("Stamina") then f[#f + 1] = n .. " " .. show(kv.value) end
+                    end
+                    ui.field(string.format("Move %d", i), tostring(mv.tag or "?"):gsub("^Gameplay%.Combat%.Attack%.", "") ..
+                             (#f > 0 and ("  (" .. table.concat(f, ", ") .. ")") or ""))
+                end
+                if enemy and #moves > 0 then
+                    local key = P.addr(x:actor())
+                    limits[key] = ui.input(label .. ": only these moves", limits[key] or "", { hint = "1, 3" })
+                    local h = ui.buttons({ "Limit its moves", "All its moves again" })
+                    if h == 1 then
+                        local places = {}
+                        for n in tostring(limits[key]):gmatch("%d+") do places[#places + 1] = tonumber(n) end
+                        P.result("fight", label .. " uses only those now.", P.callCpp("limit_moves", key, places))
+                    elseif h == 2 then P.result("fight", label .. " has all its moves again.", P.callCpp("restore_moves", key)) end
+                end
+            end
+        end, { id = "fight-change-" .. tostring(P.addr(x:actor()) or label), open = false })   -- (by fighter: two can share a name)
         ui.space(6)
     end
+
+    local chances = { tier = "Tier1" }
     Menu.page("Fight", function(ui)
         ui.heading("Fight")
         local f = Game.fight()
+        P.said(ui, "fight")
         if not f then
             if extra.note then ui.note(extra.note) end
-            ui.text("No fight now. During one, this page shows both sides (health, stamina, stats, stance and moves) and " ..
-                    "lets you heal or weaken them.")
+            ui.text("No fight now. During one, this page shows both sides (health, stamina, stats, stance and moves), lets " ..
+                    "you heal or weaken them, and takes your cat's turns.")
+            if P.has("combat", "start") and P.has("animals", "near") and Game.cat() then
+                ui.section("Start one", function()
+                    ui.note("Game.combat.start: your cat is put behind the animal and the game's pounce pressed. Beside a den " ..
+                            "no pounce starts a fight.")
+                    local near = P.cached("fight.near", 1, function() return Game.animals.near(4000) end) or {}
+                    for i, a in ipairs(near) do
+                        if i > 10 then break end
+                        if Game.valid(a.actor) and ui.button(string.format("Fight the %s, %.0f m off", words(tostring(a.model or "animal"):gsub("^SK_", "")), a.distance / 100)) then
+                            P.result("fight", "Pouncing.", Game.combat.start(a.actor))
+                        end
+                    end
+                    if #near == 0 then ui.note("No animal near.") end
+                end, { id = "fight-start", open = true })
+            end
             ui.note("The game's own switches for fights (attacks that always land, a forced difficulty) are on Game switches.")
-            return
+        else
+            local more = {}
+            for tag, n in pairs(extra.items) do more[#more + 1] = string.format("%d %s", n, itemName(tag)) end
+            if #more > 0 then ui.note("Extra drops if you win (by your cat after the fight): " .. table.concat(more, ", ")) end
+            local order = {}
+            for _, c in ipairs(f:turnOrder()) do order[#order + 1] = c:name() or words(c:kind() or "?") end
+            local cur = catAt(Game.get(f.director, "CurrentTurnAttackCharacter"))
+            ui.columns({ { "Fight", words((f:kind() or ""):gsub("^BP_", ""):gsub("_C$", "")) }, { "Turn order", table.concat(order, ", ") },
+                         { "Whose turn", cur and (cur:name() or words(cur:kind() or "?")) or "?" } })
+            if P.has("combat", "menu") then
+                ui.section("Your cat's turn", function()
+                    local menu = Game.combat.menu()
+                    if not menu then
+                        ui.note("The fight menu shows on your cat's turn: its moves are here then.")
+                    else
+                        local moves = Game.combat.moves() or {}
+                        for i, m in ipairs(moves) do
+                            if ui.button(string.format("Attack with %s (%s stamina)%s", show(m.name), show(m.stamina), m.usable and "" or ", can't now")) then
+                                P.result("fight", "Attacking with " .. show(m.name) .. ".", Game.combat.attack(i))
+                            end
+                        end
+                        local hit = ui.buttons({ "Rest", "Flee", "Win now", "Lose now" }, { kinds = { nil, "danger", "good", "danger" } })
+                        if hit == 1 then P.result("fight", "Resting.", Game.combat.rest())
+                        elseif hit == 2 then P.result("fight", "Fleeing.", Game.combat.flee())
+                        elseif hit == 3 then P.result("fight", "The enemies' health is 0: the game finishes the fight as a win.", Game.combat.finish(true))
+                        elseif hit == 4 then P.result("fight", "Lost: your cat goes back to its respawn spot.", Game.combat.finish(false)) end
+                    end
+                    local d = Game.combat.dilemma()
+                    if d then
+                        ui.text(show(d.title) .. ": " .. show(d.question), { color = THEME.heading })
+                        if d.bonus then ui.note(show(d.bonus)) end
+                        local a = ui.buttons({ show(d.option1), show(d.option2) })
+                        if a then P.result("fight", "Answered.", Game.combat.answerDilemma(a)) end
+                    end
+                    -- One player at a time: turning one on turns the other off, so they never both act on a turn.
+                    local auto = ui.switch("Take every turn for me", hits.auto == true)
+                    if auto ~= (hits.auto == true) then
+                        if auto and P.cpp() and cppAutoOn() then
+                            P.callCpp("auto_fight", false)
+                            hits.cppAuto = false
+                        end
+                        hits.auto = auto
+                        Game.combat.autoFight(auto)
+                    end
+                    ui.field("Turns taken for you", show(Game.combat.autoFightTurns()))
+                    if P.cpp() then
+                        local cppOn = cppAutoOn()
+                        local cppAuto = ui.switch("Take every turn for me, by damage (the C++ part's)", cppOn)
+                        if cppAuto ~= cppOn then
+                            if cppAuto and hits.auto then
+                                hits.auto = false
+                                Game.combat.autoFight(false)
+                            end
+                            if P.result("fight", cppAuto and "The C++ part takes your cat's turns." or "The C++ part stopped taking turns.",
+                                        P.callCpp("auto_fight", cppAuto)) then
+                                hits.cppAuto = cppAuto
+                            end
+                        end
+                        ui.field("Turns the C++ part took", show(P.callCpp("auto_fight_turns")))
+                    end
+                    ui.note("Lua's own player picks the move costing the most stamina it can use (it can't read a move's damage); " ..
+                            "the C++ part's picks by damage. One plays at a time.")
+                end, { id = "fight-turn", open = true })
+            end
+            if P.has("combat", "onDamage") then
+                ui.section("Hits", function()
+                    hits.enemy = ui.slider("Hits on the enemy", hits.enemy, 0, 10, { step = 0.25, format = "x%.2f" })
+                    hits.mine = ui.slider("Hits on your side", hits.mine, 0, 10, { step = 0.25, format = "x%.2f" })
+                    if hits.enemy ~= 1 or hits.mine ~= 1 then hookDamage() end
+                    ui.note("Game.combat.onDamage: each hit's damage, changed before the game applies it.")
+                end, { id = "fight-hits", open = false })
+            end
+            ui.section("Your side", function()
+                for _, x in ipairs(f:players()) do fighterRows(ui, x, false) end
+            end, { id = "fight-players", open = true })
+            ui.section("Against you", function()
+                for _, x in ipairs(f:enemies()) do fighterRows(ui, x, true) end
+            end, { id = "fight-enemies", open = true })
+            ui.note("Damage comes from the move, both fighters' stats and levels, and the stances.")
         end
-        local more = {}
-        for tag, n in pairs(extra.items) do more[#more + 1] = string.format("%d %s", n, itemName(tag)) end
-        if #more > 0 then ui.note("Extra drops if you win (by your cat after the fight): " .. table.concat(more, ", ")) end
-        local order = {}
-        for _, c in ipairs(f:turnOrder()) do order[#order + 1] = c:name() or words(c:kind() or "?") end
-        local cur = catAt(Game.get(f.director, "CurrentTurnAttackCharacter"))
-        ui.columns({ { "Fight", words((f:kind() or ""):gsub("^BP_", ""):gsub("_C$", "")) }, { "Turn order", table.concat(order, ", ") },
-                     { "Whose turn", cur and (cur:name() or words(cur:kind() or "?")) or "?" } })
-        ui.section("Your side", function()
-            for _, x in ipairs(f:players()) do fighterRows(ui, x, false) end
-        end, { id = "fight-players", open = true })
-        ui.section("Against you", function()
-            for _, x in ipairs(f:enemies()) do fighterRows(ui, x, true) end
-        end, { id = "fight-enemies", open = true })
-        ui.note("Damage comes from the move, both fighters' stats and levels, and the stances.")
+        ui.section("The fight AI's chances", function()
+            if not P.needCpp(ui) then return end
+            local names = P.cached("fight.tiers", 60, function() return P.callCpp("ai_tiers") end) or {}
+            if #names > 0 then chances.tier = ui.choice("Tier", chances.tier, names) end
+            local c = P.callCpp("ai_chances", chances.tier)
+            if type(c) ~= "table" then ui.note("Not read (wcmods hasn't got the tuning's map on this build).") return end
+            local keys = {}
+            for k in pairs(c) do keys[#keys + 1] = k end
+            table.sort(keys)
+            for _, k in ipairs(keys) do
+                local nv = ui.slider(words(k), c[k], 0, 1, { step = 0.05, format = "%.2f" })
+                if P.changed(nv, c[k]) then P.result("fight", words(k) .. " set for every " .. chances.tier .. " fighter.", P.callCpp("set_ai_chance", chances.tier, k, nv)) end
+            end
+            ui.note("AICombatChances.csv as the game keeps it: each choice a fighter's tree makes is behind a chance by its tier.")
+        end, { id = "fight-chances", open = false })
     end, { order = 40, group = "fight" })
 end

@@ -182,4 +182,241 @@ function P.objectives(q)
 end
 function P.questsChanged() questCache.at, objectiveCache.at = -1, -1 end
 
+-- ---------- What the pages about the rest of the SDK share ----------
+
+-- Whether this wcmods has a part of WCModsGame (Game.ai, Game.tables...): the newer pages ask before they
+-- draw, so on an older wcmods they say what's missing instead of failing.
+function P.has(...)
+    local t = Game
+    for _, k in ipairs({ ... }) do
+        if type(t) ~= "table" then return false end
+        t = t[k]
+    end
+    return t ~= nil
+end
+function P.needs(ui, ...)
+    if P.has(...) then return true end
+    ui.note("This needs a newer wcmods: Game." .. table.concat({ ... }, ".") .. " isn't in the one installed (" ..
+            tostring(Game.wcmods or "0.5.0 or older") .. ").")
+    return false
+end
+
+-- The C++ part's calls (cpp/README.md): WCModsCpp.menuPages, which this mod's own DLL puts in every script's Lua
+-- state as it starts. nil without it: not built, or built for another UE4SS (the install leaves it out then).
+function P.cpp()
+    local all = rawget(_G, "WCModsCpp")
+    local c = type(all) == "table" and all.menuPages or nil
+    return type(c) == "table" and c or nil
+end
+P.CPP_HELP = "This needs Menu pages' C++ part (its dlls/main.dll), which isn't in the game: build it with " ..
+             "`python wcmods.py cpp build menu-pages` and install, or use a release that has it."
+function P.needCpp(ui)
+    if P.cpp() then return true end
+    ui.note(P.CPP_HELP)
+    return false
+end
+-- A C++ part's call: its results, or nil and why (no C++ part, no such call, or an error in it).
+function P.callCpp(name, ...)
+    local c = P.cpp()
+    if not c then return nil, "the C++ part isn't loaded" end
+    if type(c[name]) ~= "function" then return nil, "the C++ part has no " .. name end
+    local r = table.pack(pcall(c[name], ...))
+    if not r[1] then return nil, tostring(r[2]) end
+    return table.unpack(r, 2, r.n)
+end
+
+-- What a call costs to ask every frame is asked at most every `seconds`: P.cached("animals", 0.5, fn).
+-- Keys can be made from what the player types (Words' prefix, a talk table's rows), so once there are more than
+-- `limit`, the ones past their time are dropped: they'd be asked again anyway.
+local caches, ncaches, limit = {}, 0, 200
+local function prune(now)
+    local n = 0
+    for k, c in pairs(caches) do
+        if now - c.at >= c.seconds then caches[k] = nil else n = n + 1 end
+    end
+    ncaches, limit = n, math.max(200, n * 2)   -- (so a cache full of fresh keys isn't looked through for each new one)
+end
+function P.cached(key, seconds, fn)
+    local c = caches[key]
+    if c and os.clock() - c.at < seconds then return c.value end
+    local ok, v = pcall(fn)
+    local new = caches[key] == nil
+    c = { at = os.clock(), seconds = seconds, value = ok and v or nil }
+    caches[key] = c
+    if new then
+        ncaches = ncaches + 1
+        if ncaches > limit then prune(os.clock()) end
+    end
+    if not ok then P.logOnce(key, v) end
+    return c.value
+end
+function P.forget(key)
+    if caches[key] ~= nil then caches[key], ncaches = nil, ncaches - 1 end
+end
+
+-- An error said once in UE4SS.log (a page draws every frame, so the same error would fill it).
+local said, nsaid = {}, 0
+function P.logOnce(what, err)
+    local line = tostring(what) .. ": " .. tostring(err)
+    if said[line] or nsaid >= 100 then return end
+    said[line], nsaid = true, nsaid + 1
+    MOD.log("%s", line)
+end
+
+-- Each page's last word on what a button did ("Spawned a rabbit", "Couldn't: no generator free").
+local notes = {}
+function P.say(page, text) notes[page] = text end
+function P.said(ui, page)
+    if notes[page] then ui.note(notes[page]) end
+end
+-- Say how a call went: `done` when it worked, else "Couldn't: why". A call failed when it gave false, or nil and
+-- a reason; one that gives nothing back at all (a setter) worked.
+function P.result(page, done, ok, why)
+    local failed = ok == false or (ok == nil and why ~= nil)
+    notes[page] = failed and ("Couldn't: " .. tostring(why or "the game said no")) or done
+    return not failed
+end
+
+-- Anything as short readable text: numbers without trailing zeros, places as "x, y, z", the game's objects by
+-- name, tables a few entries deep.
+function P.show(v, depth)
+    local t = type(v)
+    if t == "number" then
+        if v == math.floor(v) and math.abs(v) < 1e15 then return string.format("%d", v) end
+        local s = string.format("%.3f", v):gsub("0+$", ""):gsub("%.$", "")
+        return s
+    elseif t == "boolean" then return v and "yes" or "no"
+    elseif t == "nil" then return "-"
+    elseif t == "string" then return v
+    elseif t == "table" then
+        if type(v.X) == "number" and type(v.Y) == "number" and type(v.Z) == "number" then
+            return string.format("%.0f, %.0f, %.0f", v.X, v.Y, v.Z)
+        end
+        if (depth or 0) >= 2 then return "{...}" end
+        local parts, n = {}, 0
+        for k, x in pairs(v) do
+            n = n + 1
+            if n > 8 then parts[#parts + 1] = "..." break end
+            parts[#parts + 1] = (math.type(k) == "integer" and "" or (tostring(k) .. " ")) .. P.show(x, (depth or 0) + 1)
+        end
+        return "{" .. table.concat(parts, ", ") .. "}"
+    elseif t == "userdata" then
+        local ok, s = pcall(Game.str, v)
+        if ok and type(s) == "string" and s ~= "" then return s end
+        if Game.valid(v) then return Game.name(v) or "?" end
+        local okS, shown = pcall(Game.show, v)
+        return okS and tostring(shown) or "?"
+    end
+    return tostring(v)
+end
+
+-- A long list a page of rows at a time, with a filter box when `opts.text(item)` gives an item's text:
+-- render(item, i) draws an item's rows. Each list keeps its filter and page by `id`.
+local pagers = {}
+function P.pager(ui, id, list, render, opts)
+    opts = opts or {}
+    local st = pagers[id] or { filter = "", page = 1 }
+    pagers[id] = st
+    local size, shown = opts.size or 15, list or {}
+    if opts.text then
+        local f = ui.input(opts.label or "Find", st.filter, { hint = opts.hint or "part of its name" })
+        if f ~= st.filter then st.filter, st.page = f, 1 end
+        if st.filter ~= "" then
+            local want, out = st.filter:lower(), {}
+            for _, it in ipairs(shown) do
+                if tostring(opts.text(it) or ""):lower():find(want, 1, true) then out[#out + 1] = it end
+            end
+            shown = out
+        end
+    end
+    local pages = math.max(1, math.ceil(#shown / size))
+    if st.page > pages then st.page = pages end
+    local first, last = (st.page - 1) * size + 1, math.min(#shown, st.page * size)
+    for i = first, last do render(shown[i], i) end
+    if #shown == 0 then ui.note(opts.empty or "None.") end
+    if pages > 1 then
+        local hit = ui.buttons({ "Previous " .. size, "Next " .. size })
+        if hit == 1 then st.page = math.max(1, st.page - 1) end
+        if hit == 2 then st.page = math.min(pages, st.page + 1) end
+        ui.note(string.format("%d to %d of %d", first, last, #shown))
+    end
+    return shown
+end
+
+-- An actor picked from a list, kept by its address and looked up again in each new list, so one that has gone
+-- since is never used (asking a gone actor anything crashes the game).
+local picks = {}
+function P.pick(id, actor) picks[id] = actor and Game.valid(actor) and actor:GetAddress() or nil end
+function P.picked(id, list, actorOf)
+    local want = picks[id]
+    if not want then return nil end
+    for _, it in ipairs(list or {}) do
+        local a = actorOf and actorOf(it) or it.actor
+        if a and Game.valid(a) and a:GetAddress() == want then return it end
+    end
+    return nil
+end
+function P.pickedId(id) return picks[id] end
+
+-- A place a few metres in front of your cat with room for a cat (Game.npcs.spot), or right ahead of it.
+function P.spot(cm)
+    if P.has("npcs", "spot") then
+        local ok, at, yaw = pcall(Game.npcs.spot, cm)
+        if ok and at then return at, yaw end
+    end
+    local cat = Game.cat()
+    local l = cat and cat:location()
+    if not l then return nil end
+    return { X = l.X + (cm or 220), Y = l.Y, Z = l.Z }
+end
+
+-- Where your cat is, nil in menus.
+function P.here()
+    local cat = Game.cat()
+    return cat and cat:location() or nil
+end
+function P.addr(actor) return actor and Game.valid(actor) and actor:GetAddress() or nil end
+
+-- A blackboard's keys as rows: switches for Bool keys, number boxes for Float and Int, the rest shown; Clear on
+-- each key that's set (Game.ai: the tree sees a change at once).
+function P.blackboardRows(ui, actor, page)
+    local keys = Game.ai.keys(actor) or {}
+    if #keys == 0 then ui.note("No blackboard (no AI).") return end
+    for _, k in ipairs(keys) do
+        local v = Game.ai.get(actor, k.name)
+        if k.type == "Bool" then
+            local now = v == true
+            if ui.toggle(k.name, now) ~= now then P.result(page, k.name .. " set", Game.ai.set(actor, k.name, not now)) end
+        elseif k.type == "Float" or k.type == "Int" then
+            local n = tonumber(v) or 0
+            local nv = ui.number(k.name, n, { step = k.type == "Int" and 1 or 0.1, whole = k.type == "Int" })
+            if math.abs(nv - n) > 1e-6 then P.result(page, k.name .. " set", Game.ai.set(actor, k.name, nv)) end
+        else
+            ui.field(k.name .. "  (" .. k.type .. ")", P.show(v))
+            if v ~= nil and (k.type == "Vector" or k.type == "Object") and ui.button("Clear " .. k.name) then
+                P.result(page, k.name .. " cleared", Game.ai.clear(actor, k.name))
+            end
+        end
+    end
+end
+
+-- A struct's fields (a DataTable row's, say): { {name, type}, ... } from its UScriptStruct, nil when it can't
+-- be read.
+function P.structFields(struct)
+    if not Game.valid(struct) then return nil end
+    local out = {}
+    local ok = pcall(function()
+        local s = struct
+        while Game.valid(s) do
+            s:ForEachProperty(function(p)
+                local okT, t = pcall(function() return p:GetClass():GetFName():ToString() end)
+                out[#out + 1] = { name = p:GetFName():ToString(), type = okT and t or "?" }
+            end)
+            local okS, super = pcall(function() return s:GetSuperStruct() end)
+            s = okS and super or nil
+        end
+    end)
+    return ok and out or nil
+end
+
 return P

@@ -72,7 +72,11 @@ return function(P)
             end
             ui.field("The pile is", s.fkLevel or "?")
             local t, every = Game.freshKill.timer(), Game.freshKill.decayTime()
-            if t and every then ui.field("Goes down by 1", string.format("in %.0f s (every %.0f s)", math.max(0, every - t), every)) end
+            if t and every then
+                ui.field("Goes down by 1", string.format("in %.0f s (every %.0f s)", math.max(0, every - t), every))
+                local nv = ui.number("Seconds between drops", every, { min = 1, max = 600, step = 5 })
+                if changed(nv, every) then Game.freshKill.setDecayTime(nv) end
+            end
             local holding = ui.switch("Keep it at least here", hold.pile)
             if holding and not hold.pile then hold.pileAt = s.fk end
             hold.pile = holding
@@ -251,6 +255,23 @@ return function(P)
         return s
     end
     local TERRITORY_OF = { T = "ThunderClan", S = "ShadowClan", R = "RiverClan", W = "WindClan", M = "Moonpool", I = "the Island" }
+    -- The game's travel points (Game.places.list), whether each is unlocked taken from the C++ part's places() when
+    -- it's loaded: Game.places reads that from the save, which has an Unlock only once the game next saves, and the
+    -- C++ SDK keeps this session's unlocks until then. (Game.places.travel goes by the place's own `unlocked`.)
+    local function travelPlaces()
+        local list = Game.places.list() or {}
+        local live = P.cpp() and P.callCpp("places") or nil
+        if type(live) == "table" then
+            local byTag = {}
+            for _, p in ipairs(live) do
+                if type(p) == "table" and p.tag then byTag[p.tag] = p.unlocked == true end
+            end
+            for _, pl in ipairs(list) do
+                if byTag[pl.tag] ~= nil then pl.unlocked = byTag[pl.tag] end
+            end
+        end
+        return list
+    end
 
     Menu.page("Travel", function(ui)
         ui.heading("Travel")
@@ -320,6 +341,39 @@ return function(P)
             if ui.button("Read it again") then places.list, travel.note = nil, nil end
         end, { id = "travel-saved", open = true })
 
+        if P.has("places", "list") then
+            ui.section("The game's travel points", function()
+                ui.note("Game.places: the checkpoints your cat can travel to, and whether its save has them unlocked (as of " ..
+                        "its last save, with the C++ part's unlocks since). Travel puts your cat there with no loading screen." ..
+                        (P.cpp() and (" Unlock and Through the map are the C++ part's: the game's own unlock, and its world " ..
+                                      "map's travel, which needs the travel map open (the button below, at a checkpoint).") or ""))
+                if ui.button("Open the travel map (standing at a checkpoint)") then
+                    P.result("travel", "The travel map is open.", Game.places.openTravelMap())
+                end
+                local canCpp = P.cpp() ~= nil
+                for _, pl in ipairs(P.cached("travel.places", 2, travelPlaces) or {}) do
+                    local name = string.format("%s  (%s)%s", P.areaName(pl.zone) or tostring(pl.zone), tostring(pl.tag):gsub("^Gameplay%.Checkpoints%.", ""),
+                                               pl.unlocked and "" or ", locked")
+                    local labels = { "Travel: " .. name }
+                    if canCpp then
+                        labels[2] = pl.unlocked and "Lock" or "Unlock"
+                        labels[3] = "Through the map"
+                    end
+                    local hit = ui.buttons(labels, { kinds = { pl.unlocked and "primary" or nil } })
+                    if hit == 1 then
+                        P.result("travel", "Went to " .. name .. ".", Game.places.travel(pl))
+                    elseif hit == 2 then
+                        P.result("travel", (pl.unlocked and "Locked " or "Unlocked ") .. name .. ".",
+                                 P.callCpp("unlock_place", pl.tag, not pl.unlocked))
+                        P.forget("travel.places")
+                    elseif hit == 3 then
+                        P.result("travel", "Travelling to " .. name .. " through the world map.", P.callCpp("map_travel", pl.tag))
+                    end
+                end
+                P.said(ui, "travel")
+            end, { id = "travel-places", open = false })
+        end
+
         local found = findSpots()
         ui.section("Checkpoints", function()
             ui.note("The game's own checkpoints, by area.")
@@ -350,6 +404,7 @@ return function(P)
     local okWorld, World = pcall(require, "WCModsWorld")
     local okDraw, Draw = pcall(require, "WCModsDraw")
     if okWorld then
+        local show, marks = P.show, {}
         local look = { radius = 3000, mark = false, on = { pickups = true }, colors = {} }
         local function colorOf(kind) return look.colors[kind] or World.kindColor(kind) end
         local found, foundAt, foundKey = {}, nil, ""
@@ -393,6 +448,46 @@ return function(P)
             end
             local list = nearby()
             ui.field("Found", #list)
+            -- One of them picked (by its address, so it's looked up again in each new list): what it is, and going to it.
+            ui.section("One of them", function()
+                local labels, chosen = { "(none)" }, P.picked("nearby", list)
+                for i, it in ipairs(list) do
+                    if i > 40 then break end
+                    labels[#labels + 1] = string.format("%d. %s", i, it.label)
+                end
+                local now = "(none)"
+                for i, it in ipairs(list) do
+                    if it == chosen and i <= 40 then now = labels[i + 1] end
+                end
+                local want = ui.choice("Pick", now, labels)
+                if want ~= now then
+                    local i = tonumber(want:match("^(%d+)%."))
+                    P.pick("nearby", i and list[i] and list[i].actor or nil)
+                    chosen = i and list[i] or nil
+                end
+                if not chosen then
+                    ui.note("Pick one to see what it is (WCModsWorld.describe), go to it or mark it on the map.")
+                    return
+                end
+                local d = World.describe(chosen.actor)
+                if d then
+                    ui.columns({ { "Name", show(d.name) }, { "Class", show(d.class) }, { "Where", show(d.location) },
+                                 { "Away", string.format("%.0f m", chosen.distance / 100) } })
+                    ui.field("Made from", table.concat(d.parents or {}, ", "))
+                end
+                local hit = ui.buttons({ "Go to it", "Mark it on the map", "Take the marks off" })
+                if hit == 1 then P.jump(chosen.location, chosen.label)
+                elseif hit == 2 and P.has("mapMarker") then
+                    local m, why = Game.mapMarker(chosen.actor, { icon = "search" })
+                    if m then marks[#marks + 1] = m end
+                    P.result("nearby", "Marked on the minimap and the world map.", m ~= nil, why)
+                elseif hit == 3 then
+                    for _, m in ipairs(marks) do pcall(m.remove, m) end
+                    marks = {}
+                    P.say("nearby", "Marks taken off.")
+                end
+                P.said(ui, "nearby")
+            end, { id = "nearby-one", open = false })
             for i, it in ipairs(list) do
                 if i > 40 then
                     ui.note(string.format("... and %d more", #list - 40))
@@ -484,5 +579,63 @@ return function(P)
         end
         if drop.note then ui.note(drop.note) end
         ui.note("It's a pickup on the ground: walk to it and pick it up as usual.")
+
+        local tag = "Gameplay.Inventory." .. drop.item
+        ui.section("What it is", function()
+            local isItem = P.has("items", "isItem") and Game.items.isItem(tag)
+            ui.columns({ { "Tag", tag }, { "Kind", P.show(Game.items.type(tag)) }, { "One of the game's items", P.show(isItem) },
+                         { "You have", P.show(items[tag] or 0) } })
+            local info = Game.items.info(tag)
+            if type(info) == "table" and next(info) then ui.text(P.show(info)) end
+            if P.cpp() then
+                local full = P.cached("items.info." .. tag, 5, function() return P.callCpp("item_info", tag) end)
+                if type(full) == "table" then
+                    for _, k in ipairs((function() local o = {} for key in pairs(full) do o[#o + 1] = key end table.sort(o) return o end)()) do
+                        ui.field(P.words(k), P.show(full[k]))
+                    end
+                end
+            end
+        end, { id = "items-info", open = false })
+
+        ui.section("Your inventory, live", function()
+            if not P.needCpp(ui) then return end
+            ui.note("The inventory itself (the C++ part's inventory: what the game will save), and items put in or taken " ..
+                    "out as a pickup does, with the HUD's message. Uses the item and count above.")
+            local hit = ui.buttons({ "Put them in", "Take them out" }, { kinds = { "good", "danger" } })
+            local n = math.floor(drop.count + 0.5)
+            if hit == 1 then
+                P.result("items", string.format("Put %d %s in.", n, itemName(drop.item)), P.callCpp("add_item", tag, n, true))
+                P.forget("items.live")
+            elseif hit == 2 then
+                P.result("items", string.format("Took %d %s out.", n, itemName(drop.item)), P.callCpp("remove_item", tag, n))
+                P.forget("items.live")
+            end
+            P.said(ui, "items")
+            local live = P.cached("items.live", 1, function() return P.callCpp("inventory") end)
+            if type(live) ~= "table" then
+                ui.note("The inventory can't be read here (in a menu, or wcmods hasn't got it on this build).")
+                return
+            end
+            local list = {}
+            for t, c in pairs(live) do list[#list + 1] = { tag = t, n = c } end
+            table.sort(list, function(a, b) return a.tag < b.tag end)
+            P.pager(ui, "items-live", list, function(it)
+                local h = ui.buttons({ string.format("%s: %s", itemName(it.tag), P.show(it.n)), "+1", "-1" }, { kinds = { nil, "good", "danger" } })
+                if h == 2 then P.callCpp("add_item", it.tag, 1, false) P.forget("items.live")
+                elseif h == 3 then P.callCpp("remove_item", it.tag, 1) P.forget("items.live") end
+            end, { text = function(it) return itemName(it.tag) .. " " .. it.tag end, empty = "Nothing." })
+        end, { id = "items-live", open = false })
+
+        ui.section("Every item the game has", function()
+            if not P.needCpp(ui) then return end
+            local tags = P.cached("items.tags", 30, function() return P.callCpp("item_tags") end) or {}
+            P.pager(ui, "items-all", tags, function(t)
+                if ui.button(itemName(t) .. "  (" .. t:gsub("^Gameplay%.Inventory%.", "") .. ")") then
+                    P.result("items", "Put 1 " .. itemName(t) .. " in.", P.callCpp("add_item", t, 1, true))
+                    P.forget("items.live")
+                end
+            end, { text = function(t) return itemName(t) .. " " .. t end, size = 12 })
+            ui.note("A press puts one in your inventory (the C++ part's add_item, as a pickup does).")
+        end, { id = "items-all", open = false })
     end, { order = 23, group = "world" })
 end

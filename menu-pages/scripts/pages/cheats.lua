@@ -46,6 +46,27 @@ return function(P)
             if os.clock() - switchesAt > 1 then switches, switchesAt = Game.dev.list(), os.clock() end
             for _, p in ipairs(switches) do
                 if p.name == "GodMode" and type(god) == "number" then   -- (its flags are above)
+                elseif type(p.choices) == "table" and type(p.value) == "number" and not p.flags then
+                    -- An enum setting (Game.dev.list's choices): its names in a drop-down, in the enum's order.
+                    local names, byNumber = {}, {}
+                    for name, n in pairs(p.choices) do names[#names + 1] = { name, n } byNumber[n] = name end
+                    table.sort(names, function(a, b) return a[2] < b[2] end)
+                    local labels = {}
+                    for i, e in ipairs(names) do labels[i] = e[1] end
+                    local now = byNumber[math.floor(p.value + 0.5)] or tostring(p.value)
+                    local want = ui.choice(words(p.name), now, labels)
+                    if want ~= now and p.choices[want] then Game.dev.set(p.name, p.choices[want]) switchesAt = -1 end
+                elseif type(p.choices) == "table" and type(p.value) == "number" then
+                    -- A set of flags whose numbers add up: a tick for each.
+                    local v, nv = math.floor(p.value + 0.5), math.floor(p.value + 0.5)
+                    local flags = {}
+                    for name, n in pairs(p.choices) do if n > 0 then flags[#flags + 1] = { name, n } end end
+                    table.sort(flags, function(a, b) return a[2] < b[2] end)
+                    for _, fl in ipairs(flags) do
+                        local on = math.floor(v / fl[2]) % 2 == 1
+                        if ui.toggle(words(p.name) .. ": " .. words(fl[1]), on) ~= on then nv = nv + (on and -fl[2] or fl[2]) end
+                    end
+                    if nv ~= v then Game.dev.set(p.name, nv) switchesAt = -1 end
                 elseif p.type == "BoolProperty" then
                     local on = ui.toggle(words(p.name:gsub("^b", "")), p.value == true)
                     if on ~= (p.value == true) then Game.dev.set(p.name, on) switchesAt = -1 end
@@ -380,4 +401,43 @@ return function(P)
         ui.note("The game's own developer switches (always full health or stamina, attacks that always land, " ..
                 "fast den building ...) are on the Game switches page.")
     end, { order = 50, group = "cheats" })
+
+    -- ---------- Tuning ----------
+    -- TuningData.csv's numbers as the game holds them (the C++ part: a native map Lua can't reach). The game reads
+    -- most of them as a part starts, so a change shows once that part reads again.
+    local tuning = { only = false }
+    Menu.page("Tuning", function(ui)
+        ui.heading("Tuning")
+        ui.note("The game's tuning (TuningData.csv: experience, bonds, fights, the clock, the pile...), live. A change is " ..
+                "what every later read gets; most of the game reads its numbers as a part starts. It goes back when the game restarts.")
+        if not P.needCpp(ui) then return end
+        P.said(ui, "tuning")
+        tuning.only = ui.toggle("Only keys the game's code reads", tuning.only)
+        local keys = P.cached("tuning.keys", 60, function() return P.callCpp("tuning_keys") end) or {}
+        local list = keys
+        if tuning.only then
+            list = {}
+            for _, k in ipairs(keys) do
+                local named = P.cached("tuning.named." .. k, 600, function() return P.callCpp("tuning_named", k) end)
+                if named == "read" or named == "pattern" then list[#list + 1] = k end
+            end
+        end
+        P.pager(ui, "tuning-keys", list, function(k)
+            local v = P.cached("tuning." .. k, 0.5, function() return P.callCpp("tuning", k) end)
+            if type(v) == "number" then
+                local nv = ui.number(k, v, { step = math.abs(v) >= 10 and 1 or 0.05 })
+                if P.changed(nv, v) then
+                    P.result("tuning", k .. " is " .. P.show(nv) .. " now.", P.callCpp("set_tuning", k, nv))
+                    P.forget("tuning." .. k)
+                end
+            else
+                ui.field(k, P.show(v))
+            end
+            local about = P.cached("tuning.about." .. k, 600, function() return P.callCpp("tuning_description", k) end)
+            local named = P.cached("tuning.named." .. k, 600, function() return P.callCpp("tuning_named", k) end)
+            local said = (about and about ~= "") and about or ""
+            if named == "not_named" then said = said .. (said ~= "" and " " or "") .. "(Nothing in the game's code names it: a change most likely does nothing.)" end
+            if said ~= "" then ui.note(said) end
+        end, { text = function(k) return k end, size = 12, hint = "Gameplay.Exploration..." })
+    end, { order = 52, group = "cheats" })
 end

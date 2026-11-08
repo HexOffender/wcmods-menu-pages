@@ -122,6 +122,21 @@ return function(P)
                 end
             end
         end, { id = "stats-stats", open = true })
+        ui.section("Condition", function()
+            local now = cat:status() or "None"
+            ui.field("Condition now", now ~= "None" and string.format("%s, %s rounds", now, tostring(cat:statusRounds() or 0)) or "none")
+            local hit = ui.buttons({ "Blinded", "Furious", "Poisoned", "Stressed", "Cure" }, { kinds = { [5] = "good" } })
+            if hit == 5 then cat:clearStatus()
+            elseif hit then cat:applyStatus(({ "Blinded", "Furious", "Poisoned", "Stressed" })[hit]) end
+            local cs, maxcs = cat:combatStamina(), cat:maxCombatStamina()
+            if cs and maxcs and maxcs > 0 then
+                local v = ui.slider("Fight stamina", cs, 0, maxcs, { step = 1, format = "%.0f" })
+                if changed(v, cs) then cat:setCombatStamina(v) end
+            end
+            ui.field("Kind", tostring(cat:kind() or "?"))
+            ui.note("Through the game's own status functions, which tell its UI and the AI too. Each round's end in a fight " ..
+                    "rolls rounds x 20% to shake it off.")
+        end, { id = "stats-condition", open = false })
         ui.section("Looks", function()
             local look = cat:customization() or {}
             ui.columns({ { "Body", look.BodyValue }, { "Ears", look.EarIdx }, { "Face", look.FaceValue }, { "Tail", look.TailIdx } })
